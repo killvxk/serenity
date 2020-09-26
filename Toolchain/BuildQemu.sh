@@ -22,22 +22,19 @@ echo SYSROOT is "$SYSROOT"
 
 mkdir -p "$DIR/Tarballs"
 
-source "$DIR/UseIt.sh"
-
 pushd "$DIR/Tarballs"
+    if [ ! -e "$QEMU_VERSION.tar.xz" ]; then
+        curl -O "https://download.qemu.org/$QEMU_VERSION.tar.xz"
+    else
+        echo "Skipped downloading $QEMU_VERSION"
+    fi
 
     md5="$(md5sum $QEMU_VERSION.tar.xz | cut -f1 -d' ')"
     echo "qemu md5='$md5'"
-    if [ ! -e "$QEMU_VERSION.tar.xz" ] || [ "$md5" != "$QEMU_MD5SUM" ] ; then
-        rm -f qemu-3.0.0.tar.xz
-        curl -O "https://download.qemu.org/$QEMU_VERSION.tar.xz"
-
-        if  [ "$md5" != "$QEMU_MD5SUM" ] ; then
-            echo "qemu md5 sum mismatching, please run script again."
-            exit 1
-        fi
-    else
-        echo "Skipped downloading $QEMU_VERSION"
+    if  [ "$md5" != "$QEMU_MD5SUM" ] ; then
+        echo "qemu md5 sum mismatching, please run script again."
+        rm $$QEMU_VERSION.tar.xz
+        exit 1
     fi
 
     if [ ! -d "$QEMU_VERSION" ]; then
@@ -55,11 +52,20 @@ if [ -z "$MAKEJOBS" ]; then
     MAKEJOBS=$(nproc)
 fi
 
+if [[ $(uname) == "Darwin" ]]
+then
+    UI_LIB=cocoa
+else
+    UI_LIB=gtk
+fi
+
+echo Using $UI_LIB based UI
+
 pushd "$DIR/Build/"
     pushd qemu
         "$DIR"/Tarballs/$QEMU_VERSION/configure --prefix="$PREFIX" \
                                                 --target-list=i386-softmmu \
-                                                --enable-gtk || exit 1
+                                                --enable-$UI_LIB || exit 1
         make -j "$MAKEJOBS" || exit 1
         make install || exit 1
     popd

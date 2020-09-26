@@ -1,4 +1,4 @@
-# Serenity
+# SerenityOS
 
 Graphical Unix-like operating system for x86 computers.
 
@@ -6,92 +6,100 @@ Graphical Unix-like operating system for x86 computers.
 
 ## About
 
-*I always wondered what it would be like to write my own operating system, but I never took it seriously. Until now.*
+SerenityOS is a love letter to '90s user interfaces with a custom Unix-like core. It flatters with sincerity by stealing beautiful ideas from various other systems.
 
-Serenity is a love letter to '90s user interfaces with a custom Unix-like core. It flatters with sincerity by stealing beautiful ideas from various other systems.
+Roughly speaking, the goal is a marriage between the aesthetic of late-1990s productivity software and the power-user accessibility of late-2000s \*nix. This is a system by us, for us, based on the things we like.
 
-Roughly speaking, the goal is a marriage between the aesthetic of late-1990s productivity software and the power-user accessibility of late-2000s \*nix. This is a system by me, for me, based on the things I like.
-
-If you like some of the same things, you are welcome to join the project. It would be great to one day change the above to say "this is a system by us, for us, based on the things we like." :^)
-
-I regularly post raw hacking sessions and demos on [my YouTube channel](https://www.youtube.com/c/AndreasKling/).
+I (Andreas) regularly post raw hacking sessions and demos on [my YouTube channel](https://www.youtube.com/c/AndreasKling/).
 
 Sometimes I write about the system on [my github.io blog](https://awesomekling.github.io/).
 
-There's also a [Patreon](https://www.patreon.com/serenityos) if you would like to show some support that way.
+I'm also on [Patreon](https://www.patreon.com/serenityos) and [GitHub Sponsors](https://github.com/sponsors/awesomekling) if you would like to show some support that way.
 
 ## Screenshot
 
-![Screenshot as of 1133aca](https://raw.githubusercontent.com/SerenityOS/serenity/master/Meta/screenshot-1133aca.png)
+![Screenshot as of 8ea4375](https://raw.githubusercontent.com/SerenityOS/serenity/master/Meta/screenshot-8ea4375.png)
 
-## Current features (all under development)
+## Kernel features
 
-* Pre-emptive multitasking
-* Multithreading
-* Compositing window server
-* IPv4 networking with ARP, TCP, UDP and ICMP
+* x86 (32-bit) kernel with pre-emptive multi-threading
+* Hardware protections (SMEP, SMAP, UMIP, NX, WP, TSD, ...)
+* IPv4 stack with ARP, TCP, UDP and ICMP protocols
 * ext2 filesystem
-* Unix-like libc and userland
 * POSIX signals
-* Shell with pipes and I/O redirection
-* mmap()
+* Purgeable memory
 * /proc filesystem
-* Local sockets
 * Pseudoterminals (with /dev/pts filesystem)
 * Filesystem notifications
-* JSON framework
-* Low-level utility library (LibCore)
-* Mid-level 2D graphics library (LibDraw)
-* High-level GUI library (LibGUI)
-* HTML/CSS engine
-* Web browser
-* C++ IDE
-* Emojis (UTF-8)
-* HTTP downloads
+* CPU and memory profiling
 * SoundBlaster 16 driver
-* Software-mixing sound daemon
-* WAV playback
-* Simple desktop piano/synthesizer
-* Visual GUI design tool
-* PNG format support
-* Text editor
+* VMWare/QEMU mouse integration
+
+## System services
+
+* Launch/session daemon (SystemServer)
+* Compositing window server (WindowServer)
+* Text console manager (TTYServer)
+* DNS client (LookupServer)
+* Network protocols server (ProtocolServer)
+* Software-mixing sound daemon (AudioServer)
+* Desktop notifications (NotificationServer)
+* HTTP server (WebServer)
+* Telnet server (TelnetServer)
+* DHCP client (DHCPClient)
+
+## Libraries
+
+* C++ templates and containers (AK)
+* Event loop and utilities (LibCore)
+* 2D graphics library (LibGfx)
+* GUI toolkit (LibGUI)
+* Cross-process communication library (LibIPC)
+* HTML/CSS engine (LibWeb)
+* JavaScript engine (LibJS)
+* Markdown (LibMarkdown)
+* Audio (LibAudio)
+* PCI database (LibPCIDB)
+* Terminal emulation (LibVT)
+* Out-of-process network protocol I/O (LibProtocol)
+* Mathematical functions (LibM)
+* ELF file handling (LibELF)
+* POSIX threading (LibPthread)
+* Higher-level threading (LibThread)
+* Transport Layer Security (LibTLS)
+* HTTP and HTTPS (LibHTTP)
+
+## Userland features
+
+* Unix-like libc and userland
+* Shell with pipes and I/O redirection
+* On-line help system (both terminal and GUI variants)
+* Web browser (Browser)
+* C++ IDE (HackStudio)
 * IRC client
-* Simple painting application
-* DNS lookup
-* Desktop games: Minesweeper and Snake
-* Ports system (needs more packages!)
-* Other stuff I can't think of right now...
+* Desktop synthesizer (Piano)
+* Various desktop apps & games
+* Color themes
+
+## How do I read the documentation?
+
+Man pages are browsable outside of SerenityOS under [Base/usr/share/man](https://github.com/SerenityOS/serenity/tree/master/Base/usr/share/man).
+
+When running SerenityOS you can use `man` for the terminal interface, or `help` for the GUI interface.
 
 ## How do I build and run this?
 
-Make sure you have all the dependencies installed:
+See the [SerenityOS build instructions](https://github.com/SerenityOS/serenity/blob/master/Documentation/BuildInstructions.md)
 
-```bash
-sudo apt install build-essential curl libmpfr-dev libmpc-dev libgmp-dev e2fsprogs qemu-system-i386 qemu-utils
-```
+## Before opening an issue
 
-Ensure your gcc version is >= 8 with `gcc --version`. Otherwise, install it (on Ubuntu) with:
-```bash
-sudo add-apt-repository ppa:ubuntu-toolchain-r/test
-sudo apt-get install gcc-8 g++-8
-sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 800 --slave /usr/bin/g++ g++ /usr/bin/g++-8
-```
+Please see the [issue policy](https://github.com/SerenityOS/serenity/blob/master/CONTRIBUTING.md#issue-policy).
 
-Go into the `Toolchain/` directory and run the **BuildIt.sh** script. Then ***source*** the **UseIt.sh** script to put the `i686-pc-serenity` toolchain in your `$PATH`.
+## Communication hubs
 
-Once you've done both of those, go into the `Kernel/` directory, then run
-**./makeall.sh**, and if nothing breaks too much, take it for a spin by using
-**./run**.
+The main hub is `#serenityos` on the Freenode IRC network.
 
-You can vastly reduce the build time of successive rebuilds of Serenity by installing `ccache` and `export`ing ```PRE_CXX=ccache```
-
-Bare curious users may even consider sourcing suitable hardware to [install Serenity on a physical PC.](https://github.com/SerenityOS/serenity/blob/master/INSTALL.md)
-
-Later on, when you `git pull` to get the latest changes, there's no need to rebuild the toolchain. You can simply rerun **./makeall.sh** in the `Kernel/` directory and you'll be good to **./run** again.
-
-## IRC
-
-Come chat in `#serenityos` on the Freenode IRC network.
+We also have a project mailing list: [serenityos-dev](https://lists.sr.ht/~awesomekling/serenityos-dev).
 
 ## Author
 
@@ -102,9 +110,21 @@ Come chat in `#serenityos` on the Freenode IRC network.
 * **Robin Burchell** - [rburchell](https://github.com/rburchell)
 * **Conrad Pankoff** - [deoxxa](https://github.com/deoxxa)
 * **Sergey Bugaev** - [bugaevc](https://github.com/bugaevc)
+* **Liav A** - [supercomputer7](https://github.com/supercomputer7)
+* **Linus Groh** - [linusg](https://github.com/linusg)
+* **Ali Mohammad Pur** - [alimpfard](https://github.com/alimpfard)
+* **Shannon Booth** - [shannonbooth](https://github.com/shannonbooth)
+* **Hüseyin ASLITÜRK** - [asliturk](https://github.com/asliturk)
+* **Matthew Olsson** - [mattco98](https://github.com/mattco98)
+* **Nico Weber** - [nico](https://github.com/nico)
+* **Brian Gianforcaro** - [bgianfo](https://github.com/bgianfo)
+* **Ben Wiederhake** - [BenWiederhake](https://github.com/BenWiederhake)
+* **Tom** - [tomuta](https://github.com/tomuta)
+* **Paul Scharnofske** - [asynts](https://github.com/asynts)
+* **Itamar Shenhar** - [itamar8910](https://github.com/itamar8910)
 
-(And many more!) Feel free to append yourself here if you've made some sweet contributions. :)
+(And many more!) The people listed above have landed more than 100 commits in the project. :^)
 
 ## License
 
-Serenity is licensed under a 2-clause BSD license.
+SerenityOS is licensed under a 2-clause BSD license.

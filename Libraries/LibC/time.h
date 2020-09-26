@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #pragma once
 
 #include <sys/cdefs.h>
@@ -17,17 +43,18 @@ struct tm {
     int tm_isdst; /* Daylight saving time */
 };
 
-extern long timezone;
+extern long timezone; /* The difference in seconds between UTC and local time */
 extern long altzone;
 extern char* tzname[2];
 extern int daylight;
 
 typedef uint32_t clock_t;
-typedef uint32_t time_t;
+typedef int64_t time_t;
 
 struct tm* localtime(const time_t*);
 struct tm* gmtime(const time_t*);
 time_t mktime(struct tm*);
+time_t timegm(struct tm*);
 time_t time(time_t*);
 char* ctime(const time_t*);
 void tzset();
@@ -43,12 +70,15 @@ struct timespec {
 
 typedef int clockid_t;
 
+#define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1
 #define TIMER_ABSTIME 99
 
 int clock_gettime(clockid_t, struct timespec*);
+int clock_settime(clockid_t, struct timespec*);
 int clock_nanosleep(clockid_t, int flags, const struct timespec* requested_sleep, struct timespec* remaining_sleep);
 int clock_getres(clockid_t, struct timespec* result);
+int nanosleep(const struct timespec* requested_sleep, struct timespec* remaining_sleep);
 struct tm* gmtime_r(const time_t* timep, struct tm* result);
 struct tm* localtime_r(const time_t* timep, struct tm* result);
 

@@ -1,34 +1,69 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "TerminalWrapper.h"
 #include "ProcessStateWidget.h"
 #include <AK/String.h>
-#include <LibCore/CConfigFile.h>
-#include <LibGUI/GBoxLayout.h>
-#include <LibGUI/GMessageBox.h>
+#include <LibCore/ConfigFile.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/MessageBox.h>
 #include <LibVT/TerminalWidget.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+namespace HackStudio {
+
 void TerminalWrapper::run_command(const String& command)
 {
     if (m_pid != -1) {
-        GMessageBox::show(
+        GUI::MessageBox::show(window(),
             "A command is already running in this TerminalWrapper",
             "Can't run command",
-            GMessageBox::Type::Error,
-            GMessageBox::InputType::OK,
-            window());
+            GUI::MessageBox::Type::Error);
         return;
     }
 
-    int ptm_fd = open("/dev/ptmx", O_RDWR | O_CLOEXEC);
+    int ptm_fd = posix_openpt(O_RDWR | O_CLOEXEC);
     if (ptm_fd < 0) {
-        perror("open(ptmx)");
+        perror("posix_openpt");
+        ASSERT_NOT_REACHED();
+    }
+    if (grantpt(ptm_fd) < 0) {
+        perror("grantpt");
+        ASSERT_NOT_REACHED();
+    }
+    if (unlockpt(ptm_fd) < 0) {
+        perror("unlockpt");
         ASSERT_NOT_REACHED();
     }
 
@@ -71,6 +106,8 @@ void TerminalWrapper::run_command(const String& command)
             exit(1);
         }
 
+        tcsetpgrp(pts_fd, getpid());
+
         // NOTE: It's okay if this fails.
         (void)ioctl(0, TIOCNOTTY);
 
@@ -105,12 +142,11 @@ void TerminalWrapper::run_command(const String& command)
         }
 
         setenv("TERM", "xterm", true);
-        setenv("PATH", "/bin:/usr/bin:/usr/local/bin", true);
 
         auto parts = command.split(' ');
         ASSERT(!parts.is_empty());
-        const char** args = (const char**) calloc(parts.size() + 1, sizeof(const char*));
-        for (int i = 0; i < parts.size(); i++) {
+        const char** args = (const char**)calloc(parts.size() + 1, sizeof(const char*));
+        for (size_t i = 0; i < parts.size(); i++) {
             args[i] = parts[i].characters();
         }
         rc = execvp(args[0], const_cast<char**>(args));
@@ -133,18 +169,21 @@ void TerminalWrapper::kill_running_command()
     (void)killpg(m_pid, SIGTERM);
 }
 
-TerminalWrapper::TerminalWrapper(GWidget* parent)
-    : GWidget(parent)
+TerminalWrapper::TerminalWrapper(bool user_spawned)
+    : m_user_spawned(user_spawned)
 {
-    set_layout(make<GBoxLayout>(Orientation::Vertical));
+    set_layout<GUI::VerticalBoxLayout>();
 
-    RefPtr<CConfigFile> config = CConfigFile::get_for_app("Terminal");
-    m_terminal_widget = TerminalWidget::construct(-1, false, config);
-    add_child(*m_terminal_widget);
+    RefPtr<Core::ConfigFile> config = Core::ConfigFile::get_for_app("Terminal");
+    m_terminal_widget = add<TerminalWidget>(-1, false, config);
+    m_process_state_widget = add<ProcessStateWidget>();
 
-    m_process_state_widget = ProcessStateWidget::construct(this);
+    if (user_spawned)
+        run_command("Shell");
 }
 
 TerminalWrapper::~TerminalWrapper()
 {
+}
+
 }

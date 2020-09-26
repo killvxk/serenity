@@ -1,5 +1,31 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <LibCore/ArgsParser.h>
 #include <alloca.h>
-#include <getopt.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -14,27 +40,36 @@ static bool flag_print_gid_all = false;
 
 int main(int argc, char** argv)
 {
-    static const char* valid_option_characters = "ugGn";
-    int opt;
-    while ((opt = getopt(argc, argv, valid_option_characters)) != -1) {
-        switch (opt) {
-        case 'u':
-            flag_print_uid = true;
-            break;
-        case 'g':
-            flag_print_gid = true;
-            break;
-        case 'G':
-            flag_print_gid_all = true;
-            break;
-        case 'n':
-            flag_print_name = true;
-            break;
+    if (unveil("/etc/passwd", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
 
-        default:
-            fprintf(stderr, "usage: id [-%s]\n", valid_option_characters);
-            return 1;
-        }
+    if (unveil("/etc/group", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil(nullptr, nullptr) < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (pledge("stdio rpath", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
+    Core::ArgsParser args_parser;
+    args_parser.add_option(flag_print_uid, "Print UID", nullptr, 'u');
+    args_parser.add_option(flag_print_gid, "Print GID", nullptr, 'g');
+    args_parser.add_option(flag_print_gid_all, "Print all GIDs", nullptr, 'G');
+    args_parser.add_option(flag_print_name, "Print name", nullptr, 'n');
+    args_parser.parse(argc, argv);
+
+    if (flag_print_name && !(flag_print_uid || flag_print_gid || flag_print_gid_all)) {
+        fprintf(stderr, "cannot print only names or real IDs in default format\n");
+        return 1;
     }
 
     if (flag_print_uid + flag_print_gid + flag_print_gid_all > 1) {
@@ -46,7 +81,7 @@ int main(int argc, char** argv)
     return status;
 }
 
-bool print_uid_object(uid_t uid)
+static bool print_uid_object(uid_t uid)
 {
     if (flag_print_name) {
         struct passwd* pw = getpwuid(uid);
@@ -57,7 +92,7 @@ bool print_uid_object(uid_t uid)
     return true;
 }
 
-bool print_gid_object(gid_t gid)
+static bool print_gid_object(gid_t gid)
 {
     if (flag_print_name) {
         struct group* gr = getgrgid(gid);
@@ -67,7 +102,7 @@ bool print_gid_object(gid_t gid)
     return true;
 }
 
-bool print_gid_list()
+static bool print_gid_list()
 {
     int extra_gid_count = getgroups(0, nullptr);
     if (extra_gid_count) {
@@ -92,7 +127,7 @@ bool print_gid_list()
     return true;
 }
 
-bool print_full_id_list()
+static bool print_full_id_list()
 {
 
     uid_t uid = getuid();
@@ -100,7 +135,7 @@ bool print_full_id_list()
     struct passwd* pw = getpwuid(uid);
     struct group* gr = getgrgid(gid);
 
-    printf("uid=%u(%s), gid=%u(%s)", uid, pw ? pw->pw_name : "n/a", gid, gr ? gr->gr_name : "n/a");
+    printf("uid=%u(%s) gid=%u(%s)", uid, pw ? pw->pw_name : "n/a", gid, gr ? gr->gr_name : "n/a");
 
     int extra_gid_count = getgroups(0, nullptr);
     if (extra_gid_count) {
@@ -110,7 +145,7 @@ bool print_full_id_list()
             perror("\ngetgroups");
             return false;
         }
-        printf(", groups=");
+        printf(" groups=");
         for (int g = 0; g < extra_gid_count; ++g) {
             auto* gr = getgrgid(extra_gids[g]);
             if (gr)
@@ -124,7 +159,7 @@ bool print_full_id_list()
     return true;
 }
 
-int print_id_objects()
+static int print_id_objects()
 {
     if (flag_print_uid) {
         if (!print_uid_object(getuid()))

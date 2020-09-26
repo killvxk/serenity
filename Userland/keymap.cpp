@@ -1,78 +1,61 @@
-#include <AK/JsonObject.h>
-#include <LibCore/CFile.h>
-#include <stdio.h>
+/*
+ * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 
-#include <Kernel/Syscall.h>
-#include <AK/Optional.h>
-#include <AK/StdLibExtras.h>
-#include <AK/kmalloc.h>
+#include <LibCore/ArgsParser.h>
+#include <LibKeyboard/CharacterMap.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
-char* read_map(const JsonObject& json, const String& name)
+int main(int argc, char** argv)
 {
-    char* map = new char[80];
-
-    auto map_arr = json.get(name).as_array();
-    for(int i=0; i<map_arr.size(); i++) 
-    {
-        auto key_value = map_arr.at(i).as_string();
-        char character = 0;
-        if( key_value.length() == 0) {
-            ;
-        } else if(key_value.length() == 1){
-            character = key_value.characters()[0];
-        } else if(key_value.length() == 4){
-            if(key_value == "0x08"){
-                character = 0x08;
-            }else if(key_value == "0x33"){
-                character = 0x33;
-            }
-        } else {
-            fprintf(stderr, "Unknown character in %s[%u] = %s.\n", name.characters(), i, key_value.characters());       
-            ASSERT_NOT_REACHED();
-        }
-        
-        map[i] = character;
-    }
-
-    return map;
-}
-
-int read_map_from_file(String filename){
-    auto file = CFile::construct(filename);
-    if (!file->open(CIODevice::ReadOnly)) {
-        fprintf(stderr, "Failed to open %s: %s\n", filename.characters(), file->error_string());
+    if (pledge("stdio setkeymap rpath", nullptr) < 0) {
+        perror("pledge");
         return 1;
     }
 
-    auto file_contents = file->read_all();
-    auto json = JsonValue::from_string(file_contents).as_object();
- 
-    char* map = read_map(json, "map");
-    char* shift_map = read_map(json, "shift_map");
-    char* alt_map = read_map(json, "alt_map");
-
-    return syscall(SC_setkeymap, map, shift_map, alt_map);
-}
-
-int main(int argc, char** argv)
-{   
-    if (argc != 2) {
-        fprintf(stderr, "usage: keymap <file>\n");
-        return 0;
+    if (unveil("/res/keymaps", "r") < 0) {
+        perror("unveil");
+        return 1;
     }
 
-    String filename = argv[1];
-    int ret_val = read_map_from_file(filename);
+    if (unveil(nullptr, nullptr) < 0) {
+        perror("unveil");
+        return 1;
+    }
 
-    if(ret_val == -EPERM)
-        fprintf(stderr, "Permission denied.\n");
+    const char* path = nullptr;
+    Core::ArgsParser args_parser;
+    args_parser.add_positional_argument(path, "The mapping file to be used", "file");
+    args_parser.parse(argc, argv);
 
-    if(ret_val == 0)
-        fprintf(stderr, "New keymap loaded from \"%s\".\n", filename.characters());
+    Keyboard::CharacterMap character_map(path);
+    int rc = character_map.set_system_map();
+    if (rc != 0)
+        fprintf(stderr, "%s\n", strerror(-rc));
 
-    return ret_val;
+    return rc;
 }

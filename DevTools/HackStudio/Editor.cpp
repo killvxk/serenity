@@ -1,31 +1,61 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "Editor.h"
-#include "CppLexer.h"
+#include "CppAutoComplete.h"
 #include "EditorWrapper.h"
-#include <AK/FileSystemPath.h>
-#include <LibCore/CDirIterator.h>
-#include <LibCore/CFile.h>
-#include <LibGUI/GApplication.h>
-#include <LibGUI/GPainter.h>
-#include <LibGUI/GScrollBar.h>
-#include <LibGUI/GWindow.h>
-#include <LibHTML/DOM/ElementFactory.h>
-#include <LibHTML/DOM/HTMLHeadElement.h>
-#include <LibHTML/DOM/Text.h>
-#include <LibHTML/HtmlView.h>
-#include <LibHTML/Parser/HTMLParser.h>
-#include <LibMarkdown/MDDocument.h>
+#include <AK/ByteBuffer.h>
+#include <AK/LexicalPath.h>
+#include <LibCore/DirIterator.h>
+#include <LibCore/File.h>
+#include <LibGUI/Application.h>
+#include <LibGUI/Label.h>
+#include <LibGUI/Painter.h>
+#include <LibGUI/ScrollBar.h>
+#include <LibGUI/SyntaxHighlighter.h>
+#include <LibGUI/Window.h>
+#include <LibMarkdown/Document.h>
+#include <LibWeb/DOM/ElementFactory.h>
+#include <LibWeb/DOM/Text.h>
+#include <LibWeb/HTML/HTMLHeadElement.h>
+#include <LibWeb/InProcessWebView.h>
 
-//#define EDITOR_DEBUG
+// #define EDITOR_DEBUG
 
-Editor::Editor(GWidget* parent)
-    : GTextEditor(GTextEditor::MultiLine, parent)
+namespace HackStudio {
+
+Editor::Editor()
 {
-    m_documentation_tooltip_window = GWindow::construct();
+    set_document(CodeDocument::create());
+    m_documentation_tooltip_window = GUI::Window::construct();
     m_documentation_tooltip_window->set_rect(0, 0, 500, 400);
-    m_documentation_tooltip_window->set_window_type(GWindowType::Tooltip);
+    m_documentation_tooltip_window->set_window_type(GUI::WindowType::Tooltip);
+    m_documentation_page_view = m_documentation_tooltip_window->set_main_widget<Web::InProcessWebView>();
 
-    m_documentation_html_view = HtmlView::construct(nullptr);
-    m_documentation_tooltip_window->set_main_widget(m_documentation_html_view);
+    m_autocomplete_box = make<AutoCompleteBox>(make_weak_ptr());
 }
 
 Editor::~Editor()
@@ -41,26 +71,37 @@ const EditorWrapper& Editor::wrapper() const
     return static_cast<const EditorWrapper&>(*parent());
 }
 
-void Editor::focusin_event(CEvent& event)
+void Editor::focusin_event(GUI::FocusEvent& event)
 {
     wrapper().set_editor_has_focus({}, true);
     if (on_focus)
         on_focus();
-    GTextEditor::focusin_event(event);
+    GUI::TextEditor::focusin_event(event);
 }
 
-void Editor::focusout_event(CEvent& event)
+void Editor::focusout_event(GUI::FocusEvent& event)
 {
     wrapper().set_editor_has_focus({}, false);
-    GTextEditor::focusout_event(event);
+    GUI::TextEditor::focusout_event(event);
 }
 
-void Editor::paint_event(GPaintEvent& event)
+Gfx::IntRect Editor::breakpoint_icon_rect(size_t line_number) const
 {
-    GTextEditor::paint_event(event);
+    auto ruler_line_rect = ruler_content_rect(line_number);
 
+    auto scroll_value = vertical_scrollbar().value();
+    ruler_line_rect = ruler_line_rect.translated({ 0, -scroll_value });
+    auto center = ruler_line_rect.center().translated({ ruler_line_rect.width() - 10, -line_spacing() - 3 });
+    constexpr int size = 32;
+    return { center.x() - size / 2, center.y() - size / 2, size, size };
+}
+
+void Editor::paint_event(GUI::PaintEvent& event)
+{
+    GUI::TextEditor::paint_event(event);
+
+    GUI::Painter painter(*this);
     if (is_focused()) {
-        GPainter painter(*this);
         painter.add_clip_rect(event.rect());
 
         auto rect = frame_inner_rect();
@@ -68,7 +109,23 @@ void Editor::paint_event(GPaintEvent& event)
             rect.set_width(rect.width() - vertical_scrollbar().width());
         if (horizontal_scrollbar().is_visible())
             rect.set_height(rect.height() - horizontal_scrollbar().height());
-        painter.draw_rect(rect, Color::from_rgb(0x955233));
+        painter.draw_rect(rect, palette().selection());
+    }
+
+    if (ruler_visible()) {
+        size_t first_visible_line = text_position_at(event.rect().top_left()).line();
+        size_t last_visible_line = text_position_at(event.rect().bottom_right()).line();
+        for (size_t line : breakpoint_lines()) {
+            if (line < first_visible_line || line > last_visible_line) {
+                continue;
+            }
+            const auto& icon = breakpoint_icon_bitmap();
+            painter.blit(breakpoint_icon_rect(line).center(), icon, icon.rect());
+        }
+        if (execution_position().has_value()) {
+            const auto& icon = current_position_icon_bitmap();
+            painter.blit(breakpoint_icon_rect(execution_position().value()).center(), icon, icon.rect());
+        }
     }
 }
 
@@ -77,10 +134,10 @@ static HashMap<String, String>& man_paths()
     static HashMap<String, String> paths;
     if (paths.is_empty()) {
         // FIXME: This should also search man3, possibly other places..
-        CDirIterator it("/usr/share/man/man2", CDirIterator::Flags::SkipDots);
+        Core::DirIterator it("/usr/share/man/man2", Core::DirIterator::Flags::SkipDots);
         while (it.has_next()) {
             auto path = String::format("/usr/share/man/man2/%s", it.next_path().characters());
-            auto title = FileSystemPath(path).title();
+            auto title = LexicalPath(path).title();
             paths.set(title, path);
         }
     }
@@ -88,7 +145,7 @@ static HashMap<String, String>& man_paths()
     return paths;
 }
 
-void Editor::show_documentation_tooltip_if_available(const String& hovered_token, const Point& screen_location)
+void Editor::show_documentation_tooltip_if_available(const String& hovered_token, const Gfx::IntPoint& screen_location)
 {
     auto it = man_paths().find(hovered_token);
     if (it == man_paths().end()) {
@@ -106,163 +163,356 @@ void Editor::show_documentation_tooltip_if_available(const String& hovered_token
 #ifdef EDITOR_DEBUG
     dbg() << "opening " << it->value;
 #endif
-    auto file = CFile::construct(it->value);
-    if (!file->open(CFile::ReadOnly)) {
+    auto file = Core::File::construct(it->value);
+    if (!file->open(Core::File::ReadOnly)) {
         dbg() << "failed to open " << it->value << " " << file->error_string();
         return;
     }
 
-    MDDocument man_document;
-    bool success = man_document.parse(file->read_all());
+    auto man_document = Markdown::Document::parse(file->read_all());
 
-    if (!success) {
+    if (!man_document) {
         dbg() << "failed to parse markdown";
         return;
     }
 
-    auto html_text = man_document.render_to_html();
+    auto html_text = man_document->render_to_html();
 
-    auto html_document = parse_html_document(html_text);
-    if (!html_document) {
-        dbg() << "failed to parse HTML";
-        return;
+    m_documentation_page_view->load_html(html_text, {});
+
+    if (auto* document = m_documentation_page_view->document()) {
+        const_cast<Web::HTML::HTMLElement*>(document->body())->set_attribute(Web::HTML::AttributeNames::style, "background-color: #dac7b5;");
     }
 
-    // FIXME: LibHTML needs a friendlier DOM manipulation API. Something like innerHTML :^)
-    auto style_element = create_element(*html_document, "style");
-    style_element->append_child(adopt(*new Text(*html_document, "body { background-color: #dac7b5; }")));
-
-    // FIXME: This const_cast should not be necessary.
-    auto* head_element = const_cast<HTMLHeadElement*>(html_document->head());
-    ASSERT(head_element);
-    head_element->append_child(style_element);
-
-    m_documentation_html_view->set_document(html_document);
     m_documentation_tooltip_window->move_to(screen_location.translated(4, 4));
     m_documentation_tooltip_window->show();
 
     m_last_parsed_token = hovered_token;
 }
 
-void Editor::mousemove_event(GMouseEvent& event)
+void Editor::mousemove_event(GUI::MouseEvent& event)
 {
-    GTextEditor::mousemove_event(event);
+    GUI::TextEditor::mousemove_event(event);
 
     if (document().spans().is_empty())
         return;
 
     auto text_position = text_position_at(event.position());
     if (!text_position.is_valid()) {
-        GApplication::the().hide_tooltip();
+        m_documentation_tooltip_window->hide();
+        return;
+    }
+
+    auto highlighter = wrapper().editor().syntax_highlighter();
+    if (!highlighter)
+        return;
+
+    bool hide_tooltip = true;
+    bool is_over_link = false;
+
+    auto ruler_line_rect = ruler_content_rect(text_position.line());
+    auto hovering_lines_ruler = (event.position().x() < ruler_line_rect.width());
+    if (hovering_lines_ruler && !is_in_drag_select())
+        set_override_cursor(Gfx::StandardCursor::Arrow);
+    else if (m_hovering_editor)
+        set_override_cursor(m_hovering_link && m_holding_ctrl ? Gfx::StandardCursor::Hand : Gfx::StandardCursor::IBeam);
+
+    for (auto& span : document().spans()) {
+        if (span.range.contains(m_previous_text_position) && !span.range.contains(text_position)) {
+            if (highlighter->is_navigatable(span.data) && span.is_underlined) {
+                span.is_underlined = false;
+                wrapper().editor().update();
+            }
+        }
+
+        if (span.range.contains(text_position)) {
+            auto adjusted_range = span.range;
+            auto end_line_length = document().line(span.range.end().line()).length();
+            adjusted_range.end().set_column(min(end_line_length, adjusted_range.end().column() + 1));
+            auto hovered_span_text = document().text_in_range(adjusted_range);
+#ifdef EDITOR_DEBUG
+            dbg() << "Hovering: " << adjusted_range << " \"" << hovered_span_text << "\"";
+#endif
+
+            if (highlighter->is_navigatable(span.data)) {
+                is_over_link = true;
+                bool was_underlined = span.is_underlined;
+                span.is_underlined = event.modifiers() & Mod_Ctrl;
+                if (span.is_underlined != was_underlined) {
+                    wrapper().editor().update();
+                }
+            }
+            if (highlighter->is_identifier(span.data)) {
+                show_documentation_tooltip_if_available(hovered_span_text, event.position().translated(screen_relative_rect().location()));
+                hide_tooltip = false;
+            }
+        }
+    }
+
+    m_previous_text_position = text_position;
+    if (hide_tooltip)
+        m_documentation_tooltip_window->hide();
+
+    m_hovering_link = is_over_link && (event.modifiers() & Mod_Ctrl);
+}
+
+void Editor::mousedown_event(GUI::MouseEvent& event)
+{
+    auto highlighter = wrapper().editor().syntax_highlighter();
+    if (!highlighter) {
+        GUI::TextEditor::mousedown_event(event);
+        return;
+    }
+
+    auto text_position = text_position_at(event.position());
+    auto ruler_line_rect = ruler_content_rect(text_position.line());
+    if (event.button() == GUI::MouseButton::Left && event.position().x() < ruler_line_rect.width()) {
+        if (!breakpoint_lines().contains_slow(text_position.line())) {
+            breakpoint_lines().append(text_position.line());
+            on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Added);
+        } else {
+            breakpoint_lines().remove_first_matching([&](size_t line) { return line == text_position.line(); });
+            on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Removed);
+        }
+    }
+
+    if (!(event.modifiers() & Mod_Ctrl)) {
+        GUI::TextEditor::mousedown_event(event);
+        return;
+    }
+
+    if (!text_position.is_valid()) {
+        GUI::TextEditor::mousedown_event(event);
         return;
     }
 
     for (auto& span : document().spans()) {
         if (span.range.contains(text_position)) {
+            if (!highlighter->is_navigatable(span.data)) {
+                GUI::TextEditor::mousedown_event(event);
+                return;
+            }
+
             auto adjusted_range = span.range;
             adjusted_range.end().set_column(adjusted_range.end().column() + 1);
-            auto hovered_span_text = document().text_in_range(adjusted_range);
+            auto span_text = document().text_in_range(adjusted_range);
+            auto header_path = span_text.substring(1, span_text.length() - 2);
 #ifdef EDITOR_DEBUG
-            dbg() << "Hovering: " << adjusted_range << " \"" << hovered_span_text << "\"";
+            dbg() << "Ctrl+click: " << adjusted_range << " \"" << header_path << "\"";
 #endif
-            show_documentation_tooltip_if_available(hovered_span_text, event.position().translated(screen_relative_rect().location()));
+            navigate_to_include_if_available(header_path);
             return;
         }
     }
-    GApplication::the().hide_tooltip();
+
+    GUI::TextEditor::mousedown_event(event);
 }
 
-void Editor::highlight_matching_token_pair()
+void Editor::keydown_event(GUI::KeyEvent& event)
 {
-    enum class Direction {
-        Forward,
-        Backward,
-    };
-
-    auto find_span_of_type = [&](int i, CppToken::Type type, CppToken::Type not_type, Direction direction) {
-        int nesting_level = 0;
-        bool forward = direction == Direction::Forward;
-        for (forward ? ++i : --i; forward ? (i < document().spans().size()) : (i >= 0); forward ? ++i : --i) {
-            auto& span = document().spans().at(i);
-            auto span_token_type = (CppToken::Type)((uintptr_t)span.data);
-            if (span_token_type == not_type) {
-                ++nesting_level;
-            } else if (span_token_type == type) {
-                if (nesting_level-- <= 0)
-                    return i;
-            }
+    if (m_autocomplete_in_focus) {
+        if (event.key() == Key_Escape) {
+            m_autocomplete_in_focus = false;
+            m_autocomplete_box->close();
+            return;
         }
-        return -1;
-    };
-
-    auto make_buddies = [&](int index0, int index1) {
-        auto& buddy0 = const_cast<GTextDocumentSpan&>(document().spans()[index0]);
-        auto& buddy1 = const_cast<GTextDocumentSpan&>(document().spans()[index1]);
-        m_has_brace_buddies = true;
-        m_brace_buddies[0].index = index0;
-        m_brace_buddies[1].index = index1;
-        m_brace_buddies[0].span_backup = buddy0;
-        m_brace_buddies[1].span_backup = buddy1;
-        buddy0.background_color = Color::DarkCyan;
-        buddy1.background_color = Color::DarkCyan;
-        buddy0.color = Color::White;
-        buddy1.color = Color::White;
-        update();
-    };
-
-    struct MatchingTokenPair {
-        CppToken::Type open;
-        CppToken::Type close;
-    };
-
-    MatchingTokenPair pairs[] = {
-        { CppToken::Type::LeftCurly, CppToken::Type::RightCurly },
-        { CppToken::Type::LeftParen, CppToken::Type::RightParen },
-        { CppToken::Type::LeftBracket, CppToken::Type::RightBracket },
-    };
-
-    for (int i = 0; i < document().spans().size(); ++i) {
-        auto& span = const_cast<GTextDocumentSpan&>(document().spans().at(i));
-        auto token_type = (CppToken::Type)((uintptr_t)span.data);
-
-        for (auto& pair : pairs) {
-            if (token_type == pair.open && span.range.start() == cursor()) {
-                auto buddy = find_span_of_type(i, pair.close, pair.open, Direction::Forward);
-                if (buddy != -1)
-                    make_buddies(i, buddy);
-                return;
-            }
+        if (event.key() == Key_Down) {
+            m_autocomplete_box->next_suggestion();
+            return;
         }
-
-        auto right_of_end = span.range.end();
-        right_of_end.set_column(right_of_end.column() + 1);
-
-        for (auto& pair : pairs) {
-            if (token_type == pair.close && right_of_end == cursor()) {
-                auto buddy = find_span_of_type(i, pair.open, pair.close, Direction::Backward);
-                if (buddy != -1)
-                    make_buddies(i, buddy);
-                return;
-            }
+        if (event.key() == Key_Up) {
+            m_autocomplete_box->previous_suggestion();
+            return;
         }
+        if (event.key() == Key_Return || event.key() == Key_Tab) {
+            m_autocomplete_box->apply_suggestion();
+            close_autocomplete();
+            return;
+        }
+    }
+
+    auto autocomplete_action = [this]() {
+        auto data = get_autocomplete_request_data();
+        if (data.has_value()) {
+            update_autocomplete(data.value());
+            if (m_autocomplete_in_focus)
+                show_autocomplete(data.value());
+        } else {
+            close_autocomplete();
+        }
+    };
+
+    if (event.key() == Key_Control)
+        m_holding_ctrl = true;
+
+    if (m_holding_ctrl && event.key() == Key_Space) {
+        autocomplete_action();
+    }
+    GUI::TextEditor::keydown_event(event);
+
+    if (m_autocomplete_in_focus) {
+        autocomplete_action();
     }
 }
 
-void Editor::cursor_did_change()
+void Editor::keyup_event(GUI::KeyEvent& event)
 {
-    if (m_has_brace_buddies) {
-        if (m_brace_buddies[0].index >= 0 && m_brace_buddies[0].index < document().spans().size())
-            document().set_span_at_index(m_brace_buddies[0].index, m_brace_buddies[0].span_backup);
-        if (m_brace_buddies[1].index >= 0 && m_brace_buddies[1].index < document().spans().size())
-            document().set_span_at_index(m_brace_buddies[1].index, m_brace_buddies[1].span_backup);
-        m_has_brace_buddies = false;
-        update();
-    }
-    highlight_matching_token_pair();
+    if (event.key() == Key_Control)
+        m_holding_ctrl = false;
+    GUI::TextEditor::keyup_event(event);
 }
 
-void Editor::notify_did_rehighlight()
+void Editor::enter_event(Core::Event& event)
 {
-    m_has_brace_buddies = false;
-    highlight_matching_token_pair();
+    m_hovering_editor = true;
+    GUI::TextEditor::enter_event(event);
+}
+
+void Editor::leave_event(Core::Event& event)
+{
+    m_hovering_editor = false;
+    GUI::TextEditor::leave_event(event);
+}
+
+static HashMap<String, String>& include_paths()
+{
+    static HashMap<String, String> paths;
+
+    auto add_directory = [](String base, Optional<String> recursive, auto handle_directory) -> void {
+        Core::DirIterator it(recursive.value_or(base), Core::DirIterator::Flags::SkipDots);
+        while (it.has_next()) {
+            auto path = it.next_full_path();
+            if (!Core::File::is_directory(path)) {
+                auto key = path.substring(base.length() + 1, path.length() - base.length() - 1);
+#ifdef EDITOR_DEBUG
+                dbg() << "Adding header \"" << key << "\" in path \"" << path << "\"";
+#endif
+                paths.set(key, path);
+            } else {
+                handle_directory(base, path, handle_directory);
+            }
+        }
+    };
+
+    if (paths.is_empty()) {
+        add_directory(".", {}, add_directory);
+        add_directory("/usr/local/include", {}, add_directory);
+        add_directory("/usr/local/include/c++/9.2.0", {}, add_directory);
+        add_directory("/usr/include", {}, add_directory);
+    }
+
+    return paths;
+}
+
+void Editor::navigate_to_include_if_available(String path)
+{
+    auto it = include_paths().find(path);
+    if (it == include_paths().end()) {
+#ifdef EDITOR_DEBUG
+        dbg() << "no header " << path << " found.";
+#endif
+        return;
+    }
+
+    on_open(it->value);
+}
+
+void Editor::set_execution_position(size_t line_number)
+{
+    code_document().set_execution_position(line_number);
+    scroll_position_into_view({ line_number, 0 });
+    update(breakpoint_icon_rect(line_number));
+}
+
+void Editor::clear_execution_position()
+{
+    if (!execution_position().has_value()) {
+        return;
+    }
+    size_t previous_position = execution_position().value();
+    code_document().clear_execution_position();
+    update(breakpoint_icon_rect(previous_position));
+}
+
+const Gfx::Bitmap& Editor::breakpoint_icon_bitmap()
+{
+    static auto bitmap = Gfx::Bitmap::load_from_file("/res/icons/16x16/breakpoint.png");
+    return *bitmap;
+}
+
+const Gfx::Bitmap& Editor::current_position_icon_bitmap()
+{
+    static auto bitmap = Gfx::Bitmap::load_from_file("/res/icons/16x16/go-forward.png");
+    return *bitmap;
+}
+
+const CodeDocument& Editor::code_document() const
+{
+    const auto& doc = document();
+    ASSERT(doc.is_code_document());
+    return static_cast<const CodeDocument&>(doc);
+}
+
+CodeDocument& Editor::code_document()
+{
+    return const_cast<CodeDocument&>(static_cast<const Editor&>(*this).code_document());
+}
+
+void Editor::set_document(GUI::TextDocument& doc)
+{
+    ASSERT(doc.is_code_document());
+    GUI::TextEditor::set_document(doc);
+}
+
+Optional<Editor::AutoCompleteRequestData> Editor::get_autocomplete_request_data()
+{
+    auto highlighter = wrapper().editor().syntax_highlighter();
+    if (!highlighter)
+        return {};
+    auto& spans = document().spans();
+    for (size_t span_index = 2; span_index < spans.size(); ++span_index) {
+        auto& span = spans[span_index];
+        if (!span.range.contains(cursor())) {
+            continue;
+        }
+
+        if (highlighter->is_identifier(spans[span_index - 1].data)) {
+            auto completion_span = spans[span_index - 1];
+
+            auto adjusted_range = completion_span.range;
+            auto end_line_length = document().line(completion_span.range.end().line()).length();
+            adjusted_range.end().set_column(min(end_line_length, adjusted_range.end().column() + 1));
+            auto text_in_span = document().text_in_range(adjusted_range);
+
+            return AutoCompleteRequestData { completion_span.range.end(), text_in_span };
+        }
+    }
+    return {};
+}
+
+void Editor::update_autocomplete(const AutoCompleteRequestData& data)
+{
+    // TODO: Move this part to a language server component :)
+    auto suggestions = CppAutoComplete::get_suggestions(text(), data.position);
+    if (suggestions.is_empty()) {
+        close_autocomplete();
+        return;
+    }
+
+    m_autocomplete_box->update_suggestions(data.partial_input, move(suggestions));
+    m_autocomplete_in_focus = true;
+}
+
+void Editor::show_autocomplete(const AutoCompleteRequestData& data)
+{
+    auto suggestion_box_location = content_rect_for_position(data.position).bottom_right().translated(screen_relative_rect().top_left().translated(ruler_width(), 0).translated(10, 5));
+    m_autocomplete_box->show(suggestion_box_location);
+}
+
+void Editor::close_autocomplete()
+{
+    m_autocomplete_box->close();
+    m_autocomplete_in_focus = false;
+}
+
 }

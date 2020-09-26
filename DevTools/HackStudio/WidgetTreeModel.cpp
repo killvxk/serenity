@@ -1,32 +1,59 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "WidgetTreeModel.h"
 #include <AK/StringBuilder.h>
-#include <LibGUI/GWidget.h>
-#include <stdio.h>
+#include <LibGUI/Widget.h>
 
-WidgetTreeModel::WidgetTreeModel(GWidget& root)
+namespace HackStudio {
+
+WidgetTreeModel::WidgetTreeModel(GUI::Widget& root)
     : m_root(root)
 {
-    m_widget_icon.set_bitmap_for_size(16, GraphicsBitmap::load_from_file("/res/icons/16x16/inspector-object.png"));
+    m_widget_icon.set_bitmap_for_size(16, Gfx::Bitmap::load_from_file("/res/icons/16x16/inspector-object.png"));
 }
 
 WidgetTreeModel::~WidgetTreeModel()
 {
 }
 
-GModelIndex WidgetTreeModel::index(int row, int column, const GModelIndex& parent) const
+GUI::ModelIndex WidgetTreeModel::index(int row, int column, const GUI::ModelIndex& parent) const
 {
     if (!parent.is_valid()) {
         return create_index(row, column, m_root.ptr());
     }
-    auto& parent_node = *static_cast<GWidget*>(parent.internal_data());
+    auto& parent_node = *static_cast<GUI::Widget*>(parent.internal_data());
     return create_index(row, column, parent_node.child_widgets().at(row));
 }
 
-GModelIndex WidgetTreeModel::parent_index(const GModelIndex& index) const
+GUI::ModelIndex WidgetTreeModel::parent_index(const GUI::ModelIndex& index) const
 {
     if (!index.is_valid())
         return {};
-    auto& widget = *static_cast<GWidget*>(index.internal_data());
+    auto& widget = *static_cast<GUI::Widget*>(index.internal_data());
     if (&widget == m_root.ptr())
         return {};
 
@@ -34,7 +61,7 @@ GModelIndex WidgetTreeModel::parent_index(const GModelIndex& index) const
         return create_index(0, 0, m_root.ptr());
 
     // Walk the grandparent's children to find the index of widget's parent in its parent.
-    // (This is needed to produce the row number of the GModelIndex corresponding to widget's parent.)
+    // (This is needed to produce the row number of the GUI::ModelIndex corresponding to widget's parent.)
     int grandparent_child_index = 0;
     for (auto& grandparent_child : widget.parent_widget()->parent_widget()->child_widgets()) {
         if (grandparent_child == widget.parent_widget())
@@ -46,26 +73,26 @@ GModelIndex WidgetTreeModel::parent_index(const GModelIndex& index) const
     return {};
 }
 
-int WidgetTreeModel::row_count(const GModelIndex& index) const
+int WidgetTreeModel::row_count(const GUI::ModelIndex& index) const
 {
     if (!index.is_valid())
         return 1;
-    auto& widget = *static_cast<GWidget*>(index.internal_data());
+    auto& widget = *static_cast<GUI::Widget*>(index.internal_data());
     return widget.child_widgets().size();
 }
 
-int WidgetTreeModel::column_count(const GModelIndex&) const
+int WidgetTreeModel::column_count(const GUI::ModelIndex&) const
 {
     return 1;
 }
 
-GVariant WidgetTreeModel::data(const GModelIndex& index, Role role) const
+GUI::Variant WidgetTreeModel::data(const GUI::ModelIndex& index, GUI::ModelRole role) const
 {
-    auto* widget = static_cast<GWidget*>(index.internal_data());
-    if (role == Role::Icon) {
+    auto* widget = static_cast<GUI::Widget*>(index.internal_data());
+    if (role == GUI::ModelRole::Icon) {
         return m_widget_icon;
     }
-    if (role == Role::Display) {
+    if (role == GUI::ModelRole::Display) {
         return String::format("%s (%s)", widget->class_name(), widget->relative_rect().to_string().characters());
     }
     return {};
@@ -76,7 +103,7 @@ void WidgetTreeModel::update()
     did_update();
 }
 
-GModelIndex WidgetTreeModel::index_for_widget(GWidget& widget) const
+GUI::ModelIndex WidgetTreeModel::index_for_widget(GUI::Widget& widget) const
 {
     int parent_child_index = 0;
     for (auto& parent_child : widget.parent_widget()->child_widgets()) {
@@ -85,4 +112,6 @@ GModelIndex WidgetTreeModel::index_for_widget(GWidget& widget) const
         ++parent_child_index;
     }
     return {};
+}
+
 }

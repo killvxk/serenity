@@ -1,8 +1,37 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/TestSuite.h>
- 
+
 #include <math.h>
 
-#define EXPECT_CLOSE(a, b) { EXPECT(fabs(a - b) < 0.000001); }
+#define EXPECT_CLOSE(a, b)              \
+    {                                   \
+        EXPECT(fabs(a - b) < 0.000001); \
+    }
 
 TEST_CASE(trig)
 {
@@ -51,14 +80,14 @@ TEST_CASE(exponents)
     };
 
     values values[8] {
-        { 1.500000, 4.481626, 2.129246, 2.352379, 0.905148},
-        { 20.990000, 1304956710.432035, 652478355.216017, 652478355.216017, 1.000000},
-        { 20.010000, 490041186.687082, 245020593.343541, 245020593.343541, 1.000000},
-        { 0.000000, 1.000000, 0.000000, 1.000000, 0.000000},
-        { 0.010000, 1.010050, 0.010000, 1.000050, 0.010000},
-        { -0.010000, 0.990050, -0.010000, 1.000050, -0.010000},
-        { -1.000000, 0.367879, -1.175201, 1.543081, -0.761594},
-        { -17.000000, 0.000000, -12077476.376788, 12077476.376788, -1.000000},
+        { 1.500000, 4.481626, 2.129246, 2.352379, 0.905148 },
+        { 20.990000, 1304956710.432035, 652478355.216017, 652478355.216017, 1.000000 },
+        { 20.010000, 490041186.687082, 245020593.343541, 245020593.343541, 1.000000 },
+        { 0.000000, 1.000000, 0.000000, 1.000000, 0.000000 },
+        { 0.010000, 1.010050, 0.010000, 1.000050, 0.010000 },
+        { -0.010000, 0.990050, -0.010000, 1.000050, -0.010000 },
+        { -1.000000, 0.367879, -1.175201, 1.543081, -0.761594 },
+        { -17.000000, 0.000000, -12077476.376788, 12077476.376788, -1.000000 },
     };
     for (auto& v : values) {
         EXPECT_CLOSE(exp(v.x), v.exp);

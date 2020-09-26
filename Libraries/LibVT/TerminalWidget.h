@@ -1,21 +1,46 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #pragma once
 
 #include <AK/String.h>
-#include <LibCore/CConfigFile.h>
-#include <LibCore/CNotifier.h>
-#include <LibCore/CTimer.h>
-#include <LibDraw/GraphicsBitmap.h>
-#include <LibDraw/Rect.h>
-#include <LibGUI/GFrame.h>
+#include <LibCore/ConfigFile.h>
+#include <LibCore/ElapsedTimer.h>
+#include <LibCore/Notifier.h>
+#include <LibCore/Timer.h>
+#include <LibGUI/Frame.h>
+#include <LibGfx/Bitmap.h>
+#include <LibGfx/Rect.h>
 #include <LibVT/Terminal.h>
 
-class GScrollBar;
-
-class TerminalWidget final : public GFrame
+class TerminalWidget final : public GUI::Frame
     , public VT::TerminalClient {
     C_OBJECT(TerminalWidget)
 public:
-    TerminalWidget(int ptm_fd, bool automatic_size_policy, RefPtr<CConfigFile> config);
+    TerminalWidget(int ptm_fd, bool automatic_size_policy, RefPtr<Core::ConfigFile> config);
     virtual ~TerminalWidget() override;
 
     void set_pty_master_fd(int fd);
@@ -30,29 +55,35 @@ public:
     void flush_dirty_lines();
     void force_repaint();
 
-    void apply_size_increments_to_window(GWindow&);
+    void apply_size_increments_to_window(GUI::Window&);
+
+    const Gfx::Font& bold_font() const { return *m_bold_font; }
 
     void set_opacity(u8);
     float opacity() { return m_opacity; };
     bool should_beep() { return m_should_beep; }
     void set_should_beep(bool sb) { m_should_beep = sb; };
 
-    RefPtr<CConfigFile> config() const { return m_config; }
+    RefPtr<Core::ConfigFile> config() const { return m_config; }
 
     bool has_selection() const;
     bool selection_contains(const VT::Position&) const;
     String selected_text() const;
-    VT::Position buffer_position_at(const Point&) const;
+    VT::Position buffer_position_at(const Gfx::IntPoint&) const;
     VT::Position normalized_selection_start() const;
     VT::Position normalized_selection_end() const;
 
     bool is_scrollable() const;
+    int scroll_length() const;
+    void set_scroll_length(int);
 
-    GAction& copy_action() { return *m_copy_action; }
-    GAction& paste_action() { return *m_paste_action; }
+    GUI::Action& copy_action() { return *m_copy_action; }
+    GUI::Action& paste_action() { return *m_paste_action; }
+    GUI::Action& clear_including_history_action() { return *m_clear_including_history_action; }
 
     void copy();
     void paste();
+    void clear_including_history();
 
     virtual bool accepts_focus() const override { return true; }
 
@@ -60,34 +91,43 @@ public:
     Function<void()> on_command_exit;
 
 private:
-    // ^GWidget
-    virtual void event(CEvent&) override;
-    virtual void paint_event(GPaintEvent&) override;
-    virtual void resize_event(GResizeEvent&) override;
-    virtual void keydown_event(GKeyEvent&) override;
-    virtual void mousedown_event(GMouseEvent&) override;
-    virtual void mousemove_event(GMouseEvent&) override;
-    virtual void mousewheel_event(GMouseEvent&) override;
-    virtual void doubleclick_event(GMouseEvent&) override;
-    virtual void focusin_event(CEvent&) override;
-    virtual void focusout_event(CEvent&) override;
-    virtual void context_menu_event(GContextMenuEvent&) override;
+    // ^GUI::Widget
+    virtual void event(Core::Event&) override;
+    virtual void paint_event(GUI::PaintEvent&) override;
+    virtual void resize_event(GUI::ResizeEvent&) override;
+    virtual void keydown_event(GUI::KeyEvent&) override;
+    virtual void keyup_event(GUI::KeyEvent&) override;
+    virtual void mousedown_event(GUI::MouseEvent&) override;
+    virtual void mouseup_event(GUI::MouseEvent&) override;
+    virtual void mousemove_event(GUI::MouseEvent&) override;
+    virtual void mousewheel_event(GUI::MouseEvent&) override;
+    virtual void doubleclick_event(GUI::MouseEvent&) override;
+    virtual void focusin_event(GUI::FocusEvent&) override;
+    virtual void focusout_event(GUI::FocusEvent&) override;
+    virtual void context_menu_event(GUI::ContextMenuEvent&) override;
+    virtual void drop_event(GUI::DropEvent&) override;
+    virtual void leave_event(Core::Event&) override;
+    virtual void did_change_font() override;
 
     // ^TerminalClient
     virtual void beep() override;
     virtual void set_window_title(const StringView&) override;
+    virtual void set_window_progress(int value, int max) override;
     virtual void terminal_did_resize(u16 columns, u16 rows) override;
     virtual void terminal_history_changed() override;
+    virtual void emit(const u8*, size_t) override;
 
     void set_logical_focus(bool);
 
-    Rect glyph_rect(u16 row, u16 column);
-    Rect row_rect(u16 row);
+    Gfx::IntRect glyph_rect(u16 row, u16 column);
+    Gfx::IntRect row_rect(u16 row);
 
     void update_cursor();
     void invalidate_cursor();
 
-    Size compute_base_size() const;
+    void relayout(const Gfx::IntSize&);
+
+    Gfx::IntSize compute_base_size() const;
     int first_selection_column_on_row(int row) const;
     int last_selection_column_on_row(int row) const;
 
@@ -96,8 +136,19 @@ private:
     VT::Position m_selection_start;
     VT::Position m_selection_end;
 
+    String m_hovered_href;
+    String m_hovered_href_id;
+
+    String m_active_href;
+    String m_active_href_id;
+
+    // Snapshot of m_hovered_href when opening a context menu for a hyperlink.
+    String m_context_menu_href;
+
     bool m_should_beep { false };
     bool m_belling { false };
+    bool m_alt_key_held { false };
+    bool m_rectangle_selection { false };
 
     int m_pixel_width { 0 };
     int m_pixel_height { 0 };
@@ -110,25 +161,31 @@ private:
 
     bool m_has_logical_focus { false };
 
-    RefPtr<CNotifier> m_notifier;
+    RefPtr<Core::Notifier> m_notifier;
 
     u8 m_opacity { 255 };
     bool m_needs_background_fill { true };
     bool m_cursor_blink_state { true };
     bool m_automatic_size_policy { false };
 
+    RefPtr<Gfx::Font> m_bold_font;
+
     int m_glyph_width { 0 };
 
-    RefPtr<CTimer> m_cursor_blink_timer;
-    RefPtr<CTimer> m_visual_beep_timer;
-    RefPtr<CConfigFile> m_config;
+    RefPtr<Core::Timer> m_cursor_blink_timer;
+    RefPtr<Core::Timer> m_visual_beep_timer;
+    RefPtr<Core::ConfigFile> m_config;
 
-    RefPtr<GScrollBar> m_scrollbar;
+    RefPtr<GUI::ScrollBar> m_scrollbar;
 
-    RefPtr<GAction> m_copy_action;
-    RefPtr<GAction> m_paste_action;
+    RefPtr<GUI::Action> m_copy_action;
+    RefPtr<GUI::Action> m_paste_action;
+    RefPtr<GUI::Action> m_clear_including_history_action;
 
-    RefPtr<GMenu> m_context_menu;
+    RefPtr<GUI::Menu> m_context_menu;
+    RefPtr<GUI::Menu> m_context_menu_for_hyperlink;
 
-    CElapsedTimer m_triple_click_timer;
+    Core::ElapsedTimer m_triple_click_timer;
+
+    Gfx::IntPoint m_left_mousedown_position;
 };

@@ -1,227 +1,236 @@
-#include "History.h"
-#include <LibCore/CFile.h>
-#include <LibGUI/GAboutDialog.h>
-#include <LibGUI/GAction.h>
-#include <LibGUI/GApplication.h>
-#include <LibGUI/GBoxLayout.h>
-#include <LibGUI/GMenu.h>
-#include <LibGUI/GMenuBar.h>
-#include <LibGUI/GStatusBar.h>
-#include <LibGUI/GTextBox.h>
-#include <LibGUI/GToolBar.h>
-#include <LibGUI/GTreeView.h>
-#include <LibGUI/GWindow.h>
-#include <LibHTML/CSS/StyleResolver.h>
-#include <LibHTML/DOM/Element.h>
-#include <LibHTML/DOMTreeModel.h>
-#include <LibHTML/Dump.h>
-#include <LibHTML/HtmlView.h>
-#include <LibHTML/Layout/LayoutBlock.h>
-#include <LibHTML/Layout/LayoutDocument.h>
-#include <LibHTML/Layout/LayoutInline.h>
-#include <LibHTML/Layout/LayoutNode.h>
-#include <LibHTML/Parser/CSSParser.h>
-#include <LibHTML/Parser/HTMLParser.h>
-#include <LibHTML/ResourceLoader.h>
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include "BookmarksBarWidget.h"
+#include "Browser.h"
+#include "InspectorWidget.h"
+#include "Tab.h"
+#include "WindowActions.h"
+#include <AK/StringBuilder.h>
+#include <Applications/Browser/BrowserWindowUI.h>
+#include <LibCore/ArgsParser.h>
+#include <LibCore/ConfigFile.h>
+#include <LibCore/File.h>
+#include <LibCore/StandardPaths.h>
+#include <LibGUI/AboutDialog.h>
+#include <LibGUI/Application.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/TabWidget.h>
+#include <LibGUI/Window.h>
+#include <LibGfx/Bitmap.h>
+#include <LibWeb/Loader/ResourceLoader.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-static const char* home_url = "file:///home/anon/www/welcome.html";
+namespace Browser {
+
+String g_home_url;
+bool g_multi_process = false;
+
+static String bookmarks_file_path()
+{
+    StringBuilder builder;
+    builder.append(Core::StandardPaths::config_directory());
+    builder.append("/bookmarks.json");
+    return builder.to_string();
+}
+
+}
 
 int main(int argc, char** argv)
 {
-    GApplication app(argc, argv);
-
-    auto window = GWindow::construct();
-    window->set_rect(100, 100, 640, 480);
-
-    auto widget = GWidget::construct();
-    widget->set_fill_with_background_color(true);
-    widget->set_layout(make<GBoxLayout>(Orientation::Vertical));
-    widget->layout()->set_spacing(0);
-
-    auto toolbar = GToolBar::construct(widget);
-    auto html_widget = HtmlView::construct(widget);
-
-    History<URL> history;
-
-    RefPtr<GAction> go_back_action;
-    RefPtr<GAction> go_forward_action;
-
-    auto update_actions = [&]() {
-        go_back_action->set_enabled(history.can_go_back());
-        go_forward_action->set_enabled(history.can_go_forward());
-    };
-
-    bool should_push_loads_to_history = true;
-
-    go_back_action = GCommonActions::make_go_back_action([&](auto&) {
-        history.go_back();
-        update_actions();
-        TemporaryChange<bool> change(should_push_loads_to_history, false);
-        html_widget->load(history.current());
-    });
-
-    go_forward_action = GCommonActions::make_go_forward_action([&](auto&) {
-        history.go_forward();
-        update_actions();
-        TemporaryChange<bool> change(should_push_loads_to_history, false);
-        html_widget->load(history.current());
-    });
-
-    toolbar->add_action(*go_back_action);
-    toolbar->add_action(*go_forward_action);
-
-    toolbar->add_action(GCommonActions::make_go_home_action([&](auto&) {
-        html_widget->load(home_url);
-    }));
-
-    toolbar->add_action(GCommonActions::make_reload_action([&](auto&) {
-        html_widget->reload();
-    }));
-
-    auto location_box = GTextBox::construct(toolbar);
-
-    location_box->on_return_pressed = [&] {
-        html_widget->load(location_box->text());
-    };
-
-    html_widget->on_load_start = [&](auto& url) {
-        location_box->set_text(url.to_string());
-        if (should_push_loads_to_history)
-            history.push(url);
-        update_actions();
-    };
-
-    html_widget->on_link_click = [&](auto& url) {
-        if (url.starts_with("#")) {
-            html_widget->scroll_to_anchor(url.substring_view(1, url.length() - 1));
-        } else {
-            html_widget->load(html_widget->document()->complete_url(url));
-        }
-    };
-
-    html_widget->on_title_change = [&](auto& title) {
-        window->set_title(String::format("%s - Browser", title.characters()));
-    };
-
-    auto focus_location_box_action = GAction::create("Focus location box", { Mod_Ctrl, Key_L }, [&](auto&) {
-        location_box->select_all();
-        location_box->set_focus(true);
-    });
-
-    auto statusbar = GStatusBar::construct(widget);
-
-    html_widget->on_link_hover = [&](auto& href) {
-        statusbar->set_text(href);
-    };
-
-    ResourceLoader::the().on_load_counter_change = [&] {
-        if (ResourceLoader::the().pending_loads() == 0) {
-            statusbar->set_text("");
-            return;
-        }
-        statusbar->set_text(String::format("Loading (%d pending resources...)", ResourceLoader::the().pending_loads()));
-    };
-
-    auto menubar = make<GMenuBar>();
-
-    auto app_menu = GMenu::construct("Browser");
-    app_menu->add_action(GCommonActions::make_quit_action([&](auto&) {
-        app.quit();
-    }));
-    menubar->add_menu(move(app_menu));
-
-    RefPtr<GWindow> dom_inspector_window;
-    RefPtr<GTreeView> dom_tree_view;
-
-    auto inspect_menu = GMenu::construct("Inspect");
-    inspect_menu->add_action(GAction::create("View source", { Mod_Ctrl, Key_U }, [&](auto&) {
-        String filename_to_open;
-        char tmp_filename[] = "/tmp/view-source.XXXXXX";
-        ASSERT(html_widget->document());
-        if (html_widget->document()->url().protocol() == "file") {
-            filename_to_open = html_widget->document()->url().path();
-        } else {
-            int fd = mkstemp(tmp_filename);
-            ASSERT(fd >= 0);
-            auto source = html_widget->document()->source();
-            write(fd, source.characters(), source.length());
-            close(fd);
-            filename_to_open = tmp_filename;
-        }
-        if (fork() == 0) {
-            execl("/bin/TextEditor", "TextEditor", filename_to_open.characters(), nullptr);
-            ASSERT_NOT_REACHED();
-        }
-    }));
-    inspect_menu->add_action(GAction::create("Inspect DOM tree", [&](auto&) {
-        if (!dom_inspector_window) {
-            dom_inspector_window = GWindow::construct();
-            dom_inspector_window->set_rect(100, 100, 300, 500);
-            dom_inspector_window->set_title("DOM inspector");
-            dom_tree_view = GTreeView::construct(nullptr);
-            dom_tree_view->on_selection = [](auto& index) {
-                auto* node = static_cast<Node*>(index.internal_data());
-                node->document().set_inspected_node(node);
-            };
-            dom_inspector_window->set_main_widget(dom_tree_view);
-        }
-        if (html_widget->document())
-            dom_tree_view->set_model(DOMTreeModel::create(*html_widget->document()));
-        else
-            dom_tree_view->set_model(nullptr);
-        dom_inspector_window->show();
-        dom_inspector_window->move_to_front();
-    }));
-    menubar->add_menu(move(inspect_menu));
-
-    auto debug_menu = GMenu::construct("Debug");
-    debug_menu->add_action(GAction::create("Dump DOM tree", [&](auto&) {
-        dump_tree(*html_widget->document());
-    }));
-    debug_menu->add_action(GAction::create("Dump Layout tree", [&](auto&) {
-        dump_tree(*html_widget->document()->layout_node());
-    }));
-    debug_menu->add_action(GAction::create("Dump Style sheets", [&](auto&) {
-        for (auto& sheet : html_widget->document()->stylesheets()) {
-            dump_sheet(sheet);
-        }
-    }));
-    debug_menu->add_separator();
-    auto line_box_borders_action = GAction::create("Line box borders", [&](auto& action) {
-        action.set_checked(!action.is_checked());
-        html_widget->set_should_show_line_box_borders(action.is_checked());
-        html_widget->update();
-    });
-    line_box_borders_action->set_checkable(true);
-    line_box_borders_action->set_checked(false);
-    debug_menu->add_action(line_box_borders_action);
-    menubar->add_menu(move(debug_menu));
-
-    auto help_menu = GMenu::construct("Help");
-    help_menu->add_action(GAction::create("About", [&](const GAction&) {
-        GAboutDialog::show("Browser", GraphicsBitmap::load_from_file("/res/icons/32x32/filetype-html.png"), window);
-    }));
-    menubar->add_menu(move(help_menu));
-
-    app.set_menubar(move(menubar));
-
-    window->set_icon(GraphicsBitmap::load_from_file("/res/icons/16x16/filetype-html.png"));
-
-    window->set_title("Browser");
-    window->set_main_widget(widget);
-    window->show();
-
-    URL url_to_load = home_url;
-
-    if (app.args().size() >= 1) {
-        url_to_load = URL();
-        url_to_load.set_protocol("file");
-        url_to_load.set_path(app.args()[0]);
+    if (getuid() == 0) {
+        warn() << "Refusing to run as root";
+        return 1;
     }
 
-    html_widget->load(url_to_load);
+    if (pledge("stdio shared_buffer accept unix cpath rpath wpath fattr", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
 
-    return app.exec();
+    const char* specified_url = nullptr;
+
+    Core::ArgsParser args_parser;
+    args_parser.add_option(Browser::g_multi_process, "Multi-process mode", "multi-process", 'm');
+    args_parser.add_positional_argument(specified_url, "URL to open", "url", Core::ArgsParser::Required::No);
+    args_parser.parse(argc, argv);
+
+    auto app = GUI::Application::construct(argc, argv);
+
+    // Connect to the ProtocolServer immediately so we can drop the "unix" pledge.
+    Web::ResourceLoader::the();
+
+    // FIXME: Once there is a standalone Download Manager, we can drop the "unix" pledge.
+    if (pledge("stdio shared_buffer accept unix cpath rpath wpath", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
+    if (unveil("/home", "rwc") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/res", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/etc/passwd", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    // FIXME: Once there is a standalone Download Manager, we don't need to unveil this
+    if (unveil("/tmp/portal/launch", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/tmp/portal/image", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/tmp/portal/webcontent", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    unveil(nullptr, nullptr);
+
+    auto m_config = Core::ConfigFile::get_for_app("Browser");
+    Browser::g_home_url = m_config->read_entry("Preferences", "Home", "about:blank");
+
+    bool bookmarksbar_enabled = true;
+    auto bookmarks_bar = Browser::BookmarksBarWidget::construct(Browser::bookmarks_file_path(), bookmarksbar_enabled);
+
+    auto window = GUI::Window::construct();
+    window->resize(640, 480);
+    window->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-browser.png"));
+    window->set_title("Browser");
+
+    auto& widget = window->set_main_widget<GUI::Widget>();
+    widget.load_from_json(browser_window_ui_json);
+
+    auto& tab_widget = static_cast<GUI::TabWidget&>(*widget.find_descendant_by_name("tab_widget"));
+
+    auto default_favicon = Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-html.png");
+    ASSERT(default_favicon);
+
+    tab_widget.on_change = [&](auto& active_widget) {
+        auto& tab = static_cast<Browser::Tab&>(active_widget);
+        window->set_title(String::format("%s - Browser", tab.title().characters()));
+        tab.did_become_active();
+    };
+
+    tab_widget.on_middle_click = [&](auto& clicked_widget) {
+        auto& tab = static_cast<Browser::Tab&>(clicked_widget);
+        tab.on_tab_close_request(tab);
+    };
+
+    tab_widget.on_context_menu_request = [&](auto& clicked_widget, const GUI::ContextMenuEvent& context_menu_event) {
+        auto& tab = static_cast<Browser::Tab&>(clicked_widget);
+        tab.context_menu_requested(context_menu_event.screen_position());
+    };
+
+    Browser::WindowActions window_actions(*window);
+
+    Function<void(URL url, bool activate)> create_new_tab;
+    create_new_tab = [&](auto url, auto activate) {
+        auto type = Browser::g_multi_process ? Browser::Tab::Type::OutOfProcessWebView : Browser::Tab::Type::InProcessWebView;
+        auto& new_tab = tab_widget.add_tab<Browser::Tab>("New tab", type);
+
+        tab_widget.set_bar_visible(!window->is_fullscreen() && tab_widget.children().size() > 1);
+        tab_widget.set_tab_icon(new_tab, default_favicon);
+
+        new_tab.on_title_change = [&](auto title) {
+            tab_widget.set_tab_title(new_tab, title);
+            if (tab_widget.active_widget() == &new_tab)
+                window->set_title(String::format("%s - Browser", title.characters()));
+        };
+
+        new_tab.on_favicon_change = [&](auto& bitmap) {
+            tab_widget.set_tab_icon(new_tab, &bitmap);
+        };
+
+        new_tab.on_tab_open_request = [&](auto& url) {
+            create_new_tab(url, true);
+        };
+
+        new_tab.on_tab_close_request = [&](auto& tab) {
+            tab_widget.deferred_invoke([&](auto&) {
+                tab_widget.remove_tab(tab);
+                tab_widget.set_bar_visible(!window->is_fullscreen() && tab_widget.children().size() > 1);
+                if (tab_widget.children().is_empty())
+                    app->quit();
+            });
+        };
+
+        new_tab.load(url);
+
+        dbg() << "Added new tab " << &new_tab << ", loading " << url;
+
+        if (activate)
+            tab_widget.set_active_widget(&new_tab);
+    };
+
+    URL first_url = Browser::g_home_url;
+    if (specified_url) {
+        if (Core::File::exists(specified_url)) {
+            first_url = URL::create_with_file_protocol(Core::File::real_path_for(specified_url));
+        } else {
+            first_url = Browser::url_from_user_input(specified_url);
+        }
+    }
+
+    window_actions.on_create_new_tab = [&] {
+        create_new_tab(Browser::g_home_url, true);
+    };
+
+    window_actions.on_next_tab = [&] {
+        tab_widget.activate_next_tab();
+    };
+
+    window_actions.on_previous_tab = [&] {
+        tab_widget.activate_previous_tab();
+    };
+
+    window_actions.on_about = [&] {
+        GUI::AboutDialog::show("Browser", Gfx::Bitmap::load_from_file("/res/icons/32x32/app-browser.png"), window);
+    };
+
+    window_actions.on_show_bookmarks_bar = [&](auto& action) {
+        Browser::BookmarksBarWidget::the().set_visible(action.is_checked());
+    };
+    window_actions.show_bookmarks_bar_action().set_checked(bookmarksbar_enabled);
+
+    create_new_tab(first_url, true);
+    window->show();
+
+    return app->exec();
 }

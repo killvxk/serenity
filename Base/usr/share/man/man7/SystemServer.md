@@ -31,7 +31,7 @@ The service is advised to set this flag using [`fcntl`(2)](../man2/fcntl.md) and
 unset `SOCKET_TAKEOVER` from the environment in order not to confuse its
 children.
 
-LibCore provides `CLocalServer::take_over_from_system_server()` method that
+LibCore provides `Core::LocalServer::take_over_from_system_server()` method that
 performs the service side of the socket takeover automatically.
 
 If a service is configured as *lazy*, SystemServer will actually listen on the
@@ -41,6 +41,10 @@ connection. This all happens transparently to the client. If a lazy service is
 configured to be *kept alive*, it can even exit after some period of inactivity;
 in this case SystemServer will respawn it again once there is a new connection
 to its socket.
+
+SystemServer can also be configured to accept connections on the socket and
+spawn separate instances of the service for each accepted connection, passing
+the accepted socket to the service process.
 
 ## See also
 

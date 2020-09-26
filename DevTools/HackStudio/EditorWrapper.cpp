@@ -1,35 +1,62 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "EditorWrapper.h"
 #include "Editor.h"
-#include <LibGUI/GAction.h>
-#include <LibGUI/GBoxLayout.h>
-#include <LibGUI/GInputBox.h>
-#include <LibGUI/GLabel.h>
+#include "HackStudio.h"
+#include <LibGUI/Action.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/InputBox.h>
+#include <LibGUI/Label.h>
+#include <LibGfx/Font.h>
 
-extern RefPtr<EditorWrapper> g_current_editor_wrapper;
+namespace HackStudio {
 
-EditorWrapper::EditorWrapper(GWidget* parent)
-    : GWidget(parent)
+EditorWrapper::EditorWrapper(BreakpointChangeCallback breakpoint_change_callback)
 {
-    set_layout(make<GBoxLayout>(Orientation::Vertical));
+    set_layout<GUI::VerticalBoxLayout>();
 
-    auto label_wrapper = GWidget::construct(this);
-    label_wrapper->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    label_wrapper->set_preferred_size(0, 14);
-    label_wrapper->set_fill_with_background_color(true);
-    label_wrapper->set_layout(make<GBoxLayout>(Orientation::Horizontal));
-    label_wrapper->layout()->set_margins({ 2, 0, 2, 0 });
+    auto& label_wrapper = add<GUI::Widget>();
+    label_wrapper.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
+    label_wrapper.set_preferred_size(0, 14);
+    label_wrapper.set_fill_with_background_color(true);
+    label_wrapper.set_layout<GUI::HorizontalBoxLayout>();
+    label_wrapper.layout()->set_margins({ 2, 0, 2, 0 });
 
-    m_filename_label = GLabel::construct("(Untitled)", label_wrapper);
-    m_filename_label->set_text_alignment(TextAlignment::CenterLeft);
-    m_filename_label->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
+    m_filename_label = label_wrapper.add<GUI::Label>("(Untitled)");
+    m_filename_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
+    m_filename_label->set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
     m_filename_label->set_preferred_size(0, 14);
 
-    m_cursor_label = GLabel::construct("(Cursor)", label_wrapper);
-    m_cursor_label->set_text_alignment(TextAlignment::CenterRight);
-    m_cursor_label->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
+    m_cursor_label = label_wrapper.add<GUI::Label>("(Cursor)");
+    m_cursor_label->set_text_alignment(Gfx::TextAlignment::CenterRight);
+    m_cursor_label->set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
     m_cursor_label->set_preferred_size(0, 14);
 
-    m_editor = Editor::construct(this);
+    m_editor = add<Editor>();
     m_editor->set_ruler_visible(true);
     m_editor->set_line_wrapping_enabled(true);
     m_editor->set_automatic_indentation_enabled(true);
@@ -39,22 +66,14 @@ EditorWrapper::EditorWrapper(GWidget* parent)
     };
 
     m_editor->on_focus = [this] {
-        g_current_editor_wrapper = this;
+        set_current_editor_wrapper(this);
     };
 
-    m_editor->add_custom_context_menu_action(GAction::create(
-        "Go to line...", { Mod_Ctrl, Key_L }, GraphicsBitmap::load_from_file("/res/icons/16x16/go-forward.png"), [this](auto&) {
-            auto input_box = GInputBox::construct("Line:", "Go to line", window());
-            auto result = input_box->exec();
-            if (result == GInputBox::ExecOK) {
-                bool ok;
-                auto line_number = input_box->text_value().to_uint(ok);
-                if (ok) {
-                    m_editor->set_cursor(line_number - 1, 0);
-                }
-            }
-        },
-        m_editor));
+    m_editor->on_open = [](String path) {
+        open_file(path);
+    };
+
+    m_editor->on_breakpoint_change = move(breakpoint_change_callback);
 }
 
 EditorWrapper::~EditorWrapper()
@@ -63,5 +82,7 @@ EditorWrapper::~EditorWrapper()
 
 void EditorWrapper::set_editor_has_focus(Badge<Editor>, bool focus)
 {
-    m_filename_label->set_font(focus ? Font::default_bold_font() : Font::default_font());
+    m_filename_label->set_font(focus ? Gfx::Font::default_bold_font() : Gfx::Font::default_font());
+}
+
 }

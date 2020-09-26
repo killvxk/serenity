@@ -1,22 +1,47 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "FindInFilesWidget.h"
+#include "HackStudio.h"
 #include "Project.h"
 #include <AK/StringBuilder.h>
-#include <LibGUI/GBoxLayout.h>
-#include <LibGUI/GButton.h>
-#include <LibGUI/GTableView.h>
-#include <LibGUI/GTextBox.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/Button.h>
+#include <LibGUI/TableView.h>
+#include <LibGUI/TextBox.h>
 
-extern GTextEditor& current_editor();
-extern void open_file(const String&);
-extern OwnPtr<Project> g_project;
+namespace HackStudio {
 
 struct Match {
     String filename;
-    GTextRange range;
+    GUI::TextRange range;
     String text;
 };
 
-class SearchResultsModel final : public GModel {
+class SearchResultsModel final : public GUI::Model {
 public:
     enum Column {
         Filename,
@@ -30,8 +55,8 @@ public:
     {
     }
 
-    virtual int row_count(const GModelIndex& = GModelIndex()) const override { return m_matches.size(); }
-    virtual int column_count(const GModelIndex& = GModelIndex()) const override { return Column::__Count; }
+    virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return m_matches.size(); }
+    virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return Column::__Count; }
 
     virtual String column_name(int column) const override
     {
@@ -47,9 +72,16 @@ public:
         }
     }
 
-    virtual GVariant data(const GModelIndex& index, Role role = Role::Display) const override
+    virtual GUI::Variant data(const GUI::ModelIndex& index, GUI::ModelRole role) const override
     {
-        if (role == Role::Display) {
+        if (role == GUI::ModelRole::TextAlignment)
+            return Gfx::TextAlignment::CenterLeft;
+        if (role == GUI::ModelRole::Font) {
+            if (index.column() == Column::MatchedText)
+                return Gfx::Font::default_fixed_width_font();
+            return {};
+        }
+        if (role == GUI::ModelRole::Display) {
             auto& match = m_matches.at(index.row());
             switch (index.column()) {
             case Column::Filename:
@@ -63,16 +95,8 @@ public:
         return {};
     }
 
-    virtual ColumnMetadata column_metadata(int column) const override
-    {
-        if (column == Column::MatchedText) {
-            return { 0, TextAlignment::CenterLeft, &Font::default_fixed_width_font() };
-        }
-        return {};
-    }
-
-    virtual void update() override {}
-    virtual GModelIndex index(int row, int column = 0, const GModelIndex& = GModelIndex()) const override { return create_index(row, column, &m_matches.at(row)); }
+    virtual void update() override { }
+    virtual GUI::ModelIndex index(int row, int column = 0, const GUI::ModelIndex& = GUI::ModelIndex()) const override { return create_index(row, column, &m_matches.at(row)); }
 
 private:
     Vector<Match> m_matches;
@@ -81,7 +105,7 @@ private:
 static RefPtr<SearchResultsModel> find_in_files(const StringView& text)
 {
     Vector<Match> matches;
-    g_project->for_each_text_file([&](auto& file) {
+    project().for_each_text_file([&](auto& file) {
         auto matches_in_file = file.document().find_all(text);
         for (auto& range : matches_in_file) {
             auto whole_line_range = file.document().range_for_entire_line(range.start().line());
@@ -101,19 +125,23 @@ static RefPtr<SearchResultsModel> find_in_files(const StringView& text)
     return adopt(*new SearchResultsModel(move(matches)));
 }
 
-FindInFilesWidget::FindInFilesWidget(GWidget* parent)
-    : GWidget(parent)
+FindInFilesWidget::FindInFilesWidget()
 {
-    set_layout(make<GBoxLayout>(Orientation::Vertical));
-    m_textbox = GTextBox::construct(this);
-    m_textbox->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    m_textbox->set_preferred_size(0, 20);
-    m_button = GButton::construct("Find in files", this);
-    m_button->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    m_button->set_preferred_size(0, 20);
+    set_layout<GUI::VerticalBoxLayout>();
 
-    m_result_view = GTableView::construct(this);
-    m_result_view->set_size_columns_to_fit_content(true);
+    auto& top_container = add<Widget>();
+    top_container.set_layout<GUI::HorizontalBoxLayout>();
+    top_container.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
+    top_container.set_preferred_size(0, 20);
+
+    m_textbox = top_container.add<GUI::TextBox>();
+    m_textbox->set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fill);
+
+    m_button = top_container.add<GUI::Button>("Find in files");
+    m_button->set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
+    m_button->set_preferred_size(100, 0);
+
+    m_result_view = add<GUI::TableView>();
 
     m_result_view->on_activation = [](auto& index) {
         auto& match = *(const Match*)index.internal_data();
@@ -122,7 +150,7 @@ FindInFilesWidget::FindInFilesWidget(GWidget* parent)
         current_editor().set_focus(true);
     };
 
-    m_button->on_click = [this](auto&) {
+    m_button->on_click = [this](auto) {
         auto results_model = find_in_files(m_textbox->text());
         m_result_view->set_model(results_model);
     };
@@ -135,4 +163,6 @@ void FindInFilesWidget::focus_textbox_and_select_all()
 {
     m_textbox->select_all();
     m_textbox->set_focus(true);
+}
+
 }

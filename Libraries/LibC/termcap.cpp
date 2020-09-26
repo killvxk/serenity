@@ -1,5 +1,31 @@
-#include <AK/String.h>
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/HashMap.h>
+#include <AK/String.h>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,7 +54,7 @@ int tgetent(char* bp, const char* name)
 
 static HashMap<String, const char*>* caps = nullptr;
 
-void ensure_caps()
+static void ensure_caps()
 {
     if (caps)
         return;
@@ -69,6 +95,11 @@ void ensure_caps()
     caps->set("li", "25");
 }
 
+// Unfortunately, tgetstr() doesn't accept a size argument for the buffer
+// pointed to by area, so we have to use bare strcpy().
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 char* tgetstr(const char* id, char** area)
 {
     ensure_caps();
@@ -86,6 +117,8 @@ char* tgetstr(const char* id, char** area)
     fprintf(stderr, "tgetstr: missing cap id='%s'\n", id);
     return nullptr;
 }
+
+#pragma GCC diagnostic pop
 
 int tgetflag(const char* id)
 {

@@ -1,0 +1,19 @@
+interface Element : Node {
+
+    readonly attribute DOMString tagName;
+
+    DOMString? getAttribute(DOMString qualifiedName);
+    void setAttribute(DOMString qualifiedName, DOMString value);
+
+    Element? querySelector(DOMString selectors);
+    ArrayFromVector querySelectorAll(DOMString selectors);
+
+    attribute DOMString innerHTML;
+    attribute DOMString innerText;
+    [Reflect] attribute DOMString id;
+    [Reflect=class] attribute DOMString className;
+
+    readonly attribute Element? nextElementSibling;
+    readonly attribute Element? previousElementSibling;
+}
+

@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 /* Fire.cpp - a (classic) graphics demo for Serenity, by pd.
  * heavily based on the Fabien Sanglard's article:
  * http://fabiensanglard.net/doom_fire_psx/index.html
@@ -16,13 +42,13 @@
  *  [ ] handle fire bitmap edges better
 */
 
-#include <LibDraw/GraphicsBitmap.h>
-#include <LibDraw/PNGLoader.h>
-#include <LibGUI/GApplication.h>
-#include <LibGUI/GLabel.h>
-#include <LibGUI/GPainter.h>
-#include <LibGUI/GWidget.h>
-#include <LibGUI/GWindow.h>
+#include <LibCore/ElapsedTimer.h>
+#include <LibGUI/Application.h>
+#include <LibGUI/Label.h>
+#include <LibGUI/Painter.h>
+#include <LibGUI/Widget.h>
+#include <LibGUI/Window.h>
+#include <LibGfx/Bitmap.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -31,7 +57,7 @@
 #define FIRE_HEIGHT 168
 #define FIRE_MAX 29
 
-const Color palette[] = {
+static const Color s_palette[] = {
     Color(0x07, 0x07, 0x07), Color(0x1F, 0x07, 0x07), Color(0x2F, 0x0F, 0x07),
     Color(0x47, 0x0F, 0x07), Color(0x57, 0x17, 0x07), Color(0x67, 0x1F, 0x07),
     Color(0x77, 0x1F, 0x07), Color(0x9F, 0x2F, 0x07), Color(0xAF, 0x3F, 0x07),
@@ -44,41 +70,25 @@ const Color palette[] = {
     Color(0xCF, 0xCF, 0x6F), Color(0xEF, 0xEF, 0xC7), Color(0xFF, 0xFF, 0xFF)
 };
 
-/* Random functions...
- * These are from musl libc's prng/rand.c
-*/
-static uint64_t seed;
-
-void my_srand(unsigned s)
-{
-    seed = s - 1;
-}
-
-static int my_rand(void)
-{
-    seed = 6364136223846793005ULL * seed + 1;
-    return seed >> 33;
-}
-
 /*
  * Fire Widget
 */
-class Fire : public GWidget {
+class Fire : public GUI::Widget {
     C_OBJECT(Fire)
 public:
     virtual ~Fire() override;
-    void set_stat_label(GLabel* l) { stats = l; };
+    void set_stat_label(RefPtr<GUI::Label> l) { stats = l; };
 
 private:
-    explicit Fire(GWidget* parent = nullptr);
-    RefPtr<GraphicsBitmap> bitmap;
-    GLabel* stats;
+    Fire();
+    RefPtr<Gfx::Bitmap> bitmap;
+    RefPtr<GUI::Label> stats;
 
-    virtual void paint_event(GPaintEvent&) override;
-    virtual void timer_event(CTimerEvent&) override;
-    virtual void mousedown_event(GMouseEvent& event) override;
-    virtual void mousemove_event(GMouseEvent& event) override;
-    virtual void mouseup_event(GMouseEvent& event) override;
+    virtual void paint_event(GUI::PaintEvent&) override;
+    virtual void timer_event(Core::TimerEvent&) override;
+    virtual void mousedown_event(GUI::MouseEvent& event) override;
+    virtual void mousemove_event(GUI::MouseEvent& event) override;
+    virtual void mouseup_event(GUI::MouseEvent& event) override;
 
     bool dragging;
     int timeAvg;
@@ -86,14 +96,13 @@ private:
     int phase;
 };
 
-Fire::Fire(GWidget* parent)
-    : GWidget(parent)
+Fire::Fire()
 {
-    bitmap = GraphicsBitmap::create(GraphicsBitmap::Format::Indexed8, { 320, 200 });
+    bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::Indexed8, { 320, 200 });
 
     /* Initialize fire palette */
     for (int i = 0; i < 30; i++)
-        bitmap->set_palette_color(i, palette[i]);
+        bitmap->set_palette_color(i, s_palette[i]);
 
     /* Set remaining entries to white */
     for (int i = 30; i < 256; i++)
@@ -104,13 +113,13 @@ Fire::Fire(GWidget* parent)
     cycles = 0;
     phase = 0;
 
-    my_srand(time(nullptr));
+    srand(time(nullptr));
     stop_timer();
     start_timer(20);
 
     /* Draw fire "source" on bottom row of pixels */
     for (int i = 0; i < FIRE_WIDTH; i++)
-        bitmap->bits(bitmap->height() - 1)[i] = FIRE_MAX;
+        bitmap->scanline_u8(bitmap->height() - 1)[i] = FIRE_MAX;
 
     /* Set off initital paint event */
     //update();
@@ -120,12 +129,12 @@ Fire::~Fire()
 {
 }
 
-void Fire::paint_event(GPaintEvent& event)
+void Fire::paint_event(GUI::PaintEvent& event)
 {
-    CElapsedTimer timer;
+    Core::ElapsedTimer timer;
     timer.start();
 
-    GPainter painter(*this);
+    GUI::Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
     /* Blit it! */
@@ -135,7 +144,7 @@ void Fire::paint_event(GPaintEvent& event)
     cycles++;
 }
 
-void Fire::timer_event(CTimerEvent&)
+void Fire::timer_event(Core::TimerEvent&)
 {
     /* Update only even or odd columns per frame... */
     phase++;
@@ -145,10 +154,10 @@ void Fire::timer_event(CTimerEvent&)
     /* Paint our palettized buffer to screen */
     for (int px = 0 + phase; px < FIRE_WIDTH; px += 2) {
         for (int py = 1; py < 200; py++) {
-            int rnd = my_rand() % 3;
+            int rnd = rand() % 3;
 
             /* Calculate new pixel value, don't go below 0 */
-            u8 nv = bitmap->bits(py)[px];
+            u8 nv = bitmap->scanline_u8(py)[px];
             if (nv > 0)
                 nv -= (rnd & 1);
 
@@ -159,7 +168,7 @@ void Fire::timer_event(CTimerEvent&)
             else if (epx > FIRE_WIDTH)
                 epx = FIRE_WIDTH;
 
-            bitmap->bits(py - 1)[epx] = nv;
+            bitmap->scanline_u8(py - 1)[epx] = nv;
         }
     }
 
@@ -175,37 +184,37 @@ void Fire::timer_event(CTimerEvent&)
 /*
  * Mouse handling events
 */
-void Fire::mousedown_event(GMouseEvent& event)
+void Fire::mousedown_event(GUI::MouseEvent& event)
 {
-    if (event.button() == GMouseButton::Left)
+    if (event.button() == GUI::MouseButton::Left)
         dragging = true;
 
-    return GWidget::mousedown_event(event);
+    return GUI::Widget::mousedown_event(event);
 }
 
 /* FIXME: needs to account for the size of the window rect */
-void Fire::mousemove_event(GMouseEvent& event)
+void Fire::mousemove_event(GUI::MouseEvent& event)
 {
     if (dragging) {
         if (event.y() >= 2 && event.y() < 398 && event.x() <= 638) {
             int ypos = event.y() / 2;
             int xpos = event.x() / 2;
-            bitmap->bits(ypos - 1)[xpos] = FIRE_MAX + 5;
-            bitmap->bits(ypos - 1)[xpos + 1] = FIRE_MAX + 5;
-            bitmap->bits(ypos)[xpos] = FIRE_MAX + 5;
-            bitmap->bits(ypos)[xpos + 1] = FIRE_MAX + 5;
+            bitmap->scanline_u8(ypos - 1)[xpos] = FIRE_MAX + 5;
+            bitmap->scanline_u8(ypos - 1)[xpos + 1] = FIRE_MAX + 5;
+            bitmap->scanline_u8(ypos)[xpos] = FIRE_MAX + 5;
+            bitmap->scanline_u8(ypos)[xpos + 1] = FIRE_MAX + 5;
         }
     }
 
-    return GWidget::mousemove_event(event);
+    return GUI::Widget::mousemove_event(event);
 }
 
-void Fire::mouseup_event(GMouseEvent& event)
+void Fire::mouseup_event(GUI::MouseEvent& event)
 {
-    if (event.button() == GMouseButton::Left)
+    if (event.button() == GUI::MouseButton::Left)
         dragging = false;
 
-    return GWidget::mouseup_event(event);
+    return GUI::Widget::mouseup_event(event);
 }
 
 /*
@@ -213,25 +222,24 @@ void Fire::mouseup_event(GMouseEvent& event)
 */
 int main(int argc, char** argv)
 {
-    GApplication app(argc, argv);
+    auto app = GUI::Application::construct(argc, argv);
 
-    auto window = GWindow::construct();
+    auto window = GUI::Window::construct();
     window->set_double_buffering_enabled(false);
     window->set_title("Fire");
     window->set_resizable(false);
-    window->set_rect(100, 100, 640, 400);
+    window->resize(640, 400);
 
-    auto fire = Fire::construct();
-    window->set_main_widget(fire);
+    auto& fire = window->set_main_widget<Fire>();
 
-    auto time = GLabel::construct(fire);
-    time->set_relative_rect({ 0, 4, 40, 10 });
-    time->move_by({ window->width() - time->width(), 0 });
-    time->set_foreground_color(Color::from_rgb(0x444444));
-    fire->set_stat_label(time);
+    auto& time = fire.add<GUI::Label>();
+    time.set_relative_rect({ 0, 4, 40, 10 });
+    time.move_by({ window->width() - time.width(), 0 });
+    time.set_foreground_color(Color::from_rgb(0x444444));
+    fire.set_stat_label(time);
 
     window->show();
-    window->set_icon(load_png("/res/icons/16x16/app-demo.png"));
+    window->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-fire.png"));
 
-    return app.exec();
+    return app->exec();
 }

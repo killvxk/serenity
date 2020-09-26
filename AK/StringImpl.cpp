@@ -1,11 +1,35 @@
-#include "StringImpl.h"
-#include "HashTable.h"
-#include "StdLibExtras.h"
-#include "kmalloc.h"
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 
-#ifndef __serenity__
-#include <new>
-#endif
+#include <AK/FlyString.h>
+#include <AK/HashTable.h>
+#include <AK/Memory.h>
+#include <AK/StdLibExtras.h>
+#include <AK/StringImpl.h>
+#include <AK/kmalloc.h>
 
 //#define DEBUG_STRINGIMPL
 
@@ -13,11 +37,12 @@
 unsigned g_stringimpl_count;
 static HashTable<StringImpl*>* g_all_live_stringimpls;
 
+void dump_all_stringimpls();
 void dump_all_stringimpls()
 {
     unsigned i = 0;
     for (auto& it : *g_all_live_stringimpls) {
-        dbgprsize_tf("%u: \"%s\"\n", i, (*it).characters());
+        dbgprintf("%u: \"%s\"\n", i, (*it).characters());
         ++i;
     }
 }
@@ -49,6 +74,8 @@ StringImpl::StringImpl(ConstructWithInlineBufferTag, size_t length)
 
 StringImpl::~StringImpl()
 {
+    if (m_fly)
+        FlyString::did_destroy_impl({}, *this);
 #ifdef DEBUG_STRINGIMPL
     --g_stringimpl_count;
     g_all_live_stringimpls->remove(this);
@@ -105,6 +132,11 @@ RefPtr<StringImpl> StringImpl::create(const char* cstring, ShouldChomp shouldCho
         return nullptr;
 
     return create(cstring, strlen(cstring), shouldChomp);
+}
+
+RefPtr<StringImpl> StringImpl::create(ReadonlyBytes bytes, ShouldChomp shouldChomp)
+{
+    return StringImpl::create(reinterpret_cast<const char*>(bytes.data()), bytes.size(), shouldChomp);
 }
 
 static inline bool is_ascii_lowercase(char c)

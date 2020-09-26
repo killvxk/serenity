@@ -1,3 +1,30 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <AK/MemMem.h>
 #include <AK/Platform.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Types.h>
@@ -55,17 +82,26 @@ size_t strlen(const char* str)
     return len;
 }
 
+size_t strnlen(const char* str, size_t maxlen)
+{
+    size_t len = 0;
+    for (; len < maxlen && *str; str++)
+        len++;
+    return len;
+}
+
 char* strdup(const char* str)
 {
     size_t len = strlen(str);
     char* new_str = (char*)malloc(len + 1);
-    strcpy(new_str, str);
+    memcpy(new_str, str, len);
+    new_str[len] = '\0';
     return new_str;
 }
 
 char* strndup(const char* str, size_t maxlen)
 {
-    size_t len = min(strlen(str), maxlen);
+    size_t len = strnlen(str, maxlen);
     char* new_str = (char*)malloc(len + 1);
     memcpy(new_str, str, len);
     new_str[len] = 0;
@@ -93,35 +129,6 @@ int strncmp(const char* s1, const char* s2, size_t n)
     return 0;
 }
 
-int strcasecmp(const char* s1, const char* s2)
-{
-    int c1, c2;
-    for (;;) {
-        c1 = tolower(*s1++);
-        c2 = tolower(*s2++);
-        if (c1 == 0 || c1 != c2) {
-            return c1 - c2;
-        }
-    }
-}
-
-int strncasecmp(const char* s1, const char* s2, size_t n)
-{
-    if (n == 0) {
-        return 0;
-    }
-
-    while (n-- != 0 && tolower(*s1) == tolower(*s2)) {
-        if (n == 0 || *s1 == '\0' || *s2 == '\0') {
-            break;
-        }
-        s1++;
-        s2++;
-    }
-
-    return tolower(*s1) - tolower(*s2);
-}
-
 int memcmp(const void* v1, const void* v2, size_t n)
 {
     auto* s1 = (const uint8_t*)v1;
@@ -134,103 +141,24 @@ int memcmp(const void* v1, const void* v2, size_t n)
 }
 
 #if ARCH(I386)
-void* mmx_memcpy(void* dest, const void* src, size_t len)
-{
-    ASSERT(len >= 1024);
-
-    auto* dest_ptr = (u8*)dest;
-    auto* src_ptr = (const u8*)src;
-
-    if ((u32)dest_ptr & 7) {
-        u32 prologue = 8 - ((u32)dest_ptr & 7);
-        len -= prologue;
-        asm volatile(
-            "rep movsb\n"
-            : "=S"(src_ptr), "=D"(dest_ptr), "=c"(prologue)
-            : "0"(src_ptr), "1"(dest_ptr), "2"(prologue)
-            : "memory");
-    }
-    for (u32 i = len / 64; i; --i) {
-        asm volatile(
-            "movq (%0), %%mm0\n"
-            "movq 8(%0), %%mm1\n"
-            "movq 16(%0), %%mm2\n"
-            "movq 24(%0), %%mm3\n"
-            "movq 32(%0), %%mm4\n"
-            "movq 40(%0), %%mm5\n"
-            "movq 48(%0), %%mm6\n"
-            "movq 56(%0), %%mm7\n"
-            "movq %%mm0, (%1)\n"
-            "movq %%mm1, 8(%1)\n"
-            "movq %%mm2, 16(%1)\n"
-            "movq %%mm3, 24(%1)\n"
-            "movq %%mm4, 32(%1)\n"
-            "movq %%mm5, 40(%1)\n"
-            "movq %%mm6, 48(%1)\n"
-            "movq %%mm7, 56(%1)\n" ::"r"(src_ptr),
-            "r"(dest_ptr)
-            : "memory");
-        src_ptr += 64;
-        dest_ptr += 64;
-    }
-    asm volatile("emms" ::
-                     : "memory");
-    // Whatever remains we'll have to memcpy.
-    len %= 64;
-    if (len)
-        memcpy(dest_ptr, src_ptr, len);
-    return dest;
-}
-
 void* memcpy(void* dest_ptr, const void* src_ptr, size_t n)
 {
-    if (n >= 1024)
-        return mmx_memcpy(dest_ptr, src_ptr, n);
-
-    u32 dest = (u32)dest_ptr;
-    u32 src = (u32)src_ptr;
-    // FIXME: Support starting at an unaligned address.
-    if (!(dest & 0x3) && !(src & 0x3) && n >= 12) {
-        size_t u32s = n / sizeof(u32);
-        asm volatile(
-            "rep movsl\n"
-            : "=S"(src), "=D"(dest)
-            : "S"(src), "D"(dest), "c"(u32s)
-            : "memory");
-        n -= u32s * sizeof(u32);
-        if (n == 0)
-            return dest_ptr;
-    }
+    void* original_dest = dest_ptr;
     asm volatile(
-        "rep movsb\n" ::"S"(src), "D"(dest), "c"(n)
-        : "memory");
-    return dest_ptr;
+        "rep movsb"
+        : "+D"(dest_ptr), "+S"(src_ptr), "+c"(n)::"memory");
+    return original_dest;
 }
 
 void* memset(void* dest_ptr, int c, size_t n)
 {
-    u32 dest = (u32)dest_ptr;
-    // FIXME: Support starting at an unaligned address.
-    if (!(dest & 0x3) && n >= 12) {
-        size_t u32s = n / sizeof(u32);
-        u32 expanded_c = (u8)c;
-        expanded_c |= expanded_c << 8;
-        expanded_c |= expanded_c << 16;
-        asm volatile(
-            "rep stosl\n"
-            : "=D"(dest)
-            : "D"(dest), "c"(u32s), "a"(expanded_c)
-            : "memory");
-        n -= u32s * sizeof(u32);
-        if (n == 0)
-            return dest_ptr;
-    }
+    void* original_dest = dest_ptr;
     asm volatile(
         "rep stosb\n"
-        : "=D"(dest), "=c"(n)
-        : "0"(dest), "1"(n), "a"(c)
+        : "=D"(dest_ptr), "=c"(n)
+        : "0"(dest_ptr), "1"(n), "a"(c)
         : "memory");
-    return dest_ptr;
+    return original_dest;
 }
 #else
 void* memcpy(void* dest_ptr, const void* src_ptr, size_t n)
@@ -263,6 +191,11 @@ void* memmove(void* dest, const void* src, size_t n)
     return dest;
 }
 
+const void* memmem(const void* haystack, size_t haystack_length, const void* needle, size_t needle_length)
+{
+    return AK::memmem(haystack, haystack_length, needle, needle_length);
+}
+
 char* strcpy(char* dest, const char* src)
 {
     char* originalDest = dest;
@@ -281,6 +214,19 @@ char* strncpy(char* dest, const char* src, size_t n)
     return dest;
 }
 
+size_t strlcpy(char* dest, const char* src, size_t n)
+{
+    size_t i;
+    // Would like to test i < n - 1 here, but n might be 0.
+    for (i = 0; i + 1 < n && src[i] != '\0'; ++i)
+        dest[i] = src[i];
+    if (n)
+        dest[i] = '\0';
+    for (; src[i] != '\0'; ++i)
+        ; // Determine the length of src, don't copy.
+    return i;
+}
+
 char* strchr(const char* str, int c)
 {
     char ch = c;
@@ -289,6 +235,15 @@ char* strchr(const char* str, int c)
             return const_cast<char*>(str);
         if (!*str)
             return nullptr;
+    }
+}
+
+char* strchrnul(const char* str, int c)
+{
+    char ch = c;
+    for (;; ++str) {
+        if (*str == ch || !*str)
+            return const_cast<char*>(str);
     }
 }
 

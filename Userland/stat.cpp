@@ -1,3 +1,33 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020, Shannon Booth <shannon.ml.booth@gmail.com>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <AK/String.h>
+#include <LibCore/ArgsParser.h>
+#include <LibCore/DateTime.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -5,24 +35,20 @@
 #include <time.h>
 #include <unistd.h>
 
-int main(int argc, char** argv)
+static int stat(const char* file, bool should_follow_links)
 {
-    if (argc == 1) {
-        printf("stat <file>\n");
-        return 1;
-    }
     struct stat st;
-    int rc = lstat(argv[1], &st);
+    int rc = should_follow_links ? stat(file, &st) : lstat(file, &st);
     if (rc < 0) {
         perror("lstat");
         return 1;
     }
-    printf("    File: %s\n", argv[1]);
+    printf("    File: %s\n", file);
     printf("   Inode: %u\n", st.st_ino);
     if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode))
         printf("  Device: %u,%u\n", major(st.st_rdev), minor(st.st_rdev));
     else
-        printf("    Size: %u\n", st.st_size);
+        printf("    Size: %zd\n", st.st_size);
     printf("   Links: %u\n", st.st_nlink);
     printf("  Blocks: %u\n", st.st_blocks);
     printf("     UID: %u", st.st_uid);
@@ -72,14 +98,7 @@ int main(int argc, char** argv)
     printf(")\n");
 
     auto print_time = [](time_t t) {
-        auto* tm = localtime(&t);
-        printf("%4u-%02u-%02u %02u:%02u:%02u\n",
-            tm->tm_year + 1900,
-            tm->tm_mon + 1,
-            tm->tm_mday,
-            tm->tm_hour,
-            tm->tm_min,
-            tm->tm_sec);
+        printf("%s\n", Core::DateTime::from_timestamp(t).to_string().characters());
     };
 
     printf("Accessed: ");
@@ -90,4 +109,26 @@ int main(int argc, char** argv)
     print_time(st.st_ctime);
 
     return 0;
+}
+
+int main(int argc, char** argv)
+{
+    if (pledge("stdio rpath", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
+    bool should_follow_links = false;
+    Vector<const char*> files;
+
+    auto args_parser = Core::ArgsParser();
+    args_parser.add_option(should_follow_links, "Follow links to files", nullptr, 'L');
+    args_parser.add_positional_argument(files, "File(s) to stat", "file", Core::ArgsParser::Required::Yes);
+    args_parser.parse(argc, argv);
+
+    int ret = 0;
+    for (auto& file : files)
+        ret |= stat(file, should_follow_links);
+
+    return ret;
 }

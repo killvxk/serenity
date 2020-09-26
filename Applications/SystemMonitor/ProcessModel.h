@@ -1,9 +1,36 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #pragma once
 
 #include <AK/HashMap.h>
+#include <AK/NonnullOwnPtrVector.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
-#include <LibGUI/GModel.h>
+#include <LibGUI/Model.h>
 #include <unistd.h>
 
 class GraphWidget;
@@ -17,21 +44,30 @@ struct PidAndTid {
     int tid;
 };
 
-class ProcessModel final : public GModel {
+class ProcessModel final : public GUI::Model {
 public:
     enum Column {
         Icon = 0,
         Name,
         CPU,
+        Processor,
         State,
         Priority,
+        EffectivePriority,
         User,
         PID,
         TID,
+        PPID,
+        PGID,
+        SID,
         Virtual,
         Physical,
+        DirtyPrivate,
+        CleanInode,
         PurgeableVolatile,
         PurgeableNonvolatile,
+        Veil,
+        Pledge,
         Syscalls,
         InodeFaults,
         ZeroFaults,
@@ -50,28 +86,48 @@ public:
     static NonnullRefPtr<ProcessModel> create() { return adopt(*new ProcessModel); }
     virtual ~ProcessModel() override;
 
-    virtual int row_count(const GModelIndex&) const override;
-    virtual int column_count(const GModelIndex&) const override;
+    virtual int row_count(const GUI::ModelIndex&) const override;
+    virtual int column_count(const GUI::ModelIndex&) const override;
     virtual String column_name(int column) const override;
-    virtual ColumnMetadata column_metadata(int column) const override;
-    virtual GVariant data(const GModelIndex&, Role = Role::Display) const override;
+    virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
     virtual void update() override;
 
-    Function<void(float)> on_new_cpu_data_point;
+    struct CpuInfo {
+        u32 id;
+        float total_cpu_percent { 0.0 };
+
+        CpuInfo(u32 id)
+            : id(id)
+        {
+        }
+    };
+
+    Function<void(const NonnullOwnPtrVector<CpuInfo>&)> on_cpu_info_change;
+
+    const NonnullOwnPtrVector<CpuInfo>& cpus() const { return m_cpus; }
 
 private:
     ProcessModel();
 
     struct ThreadState {
-        int tid;
+        pid_t tid;
         pid_t pid;
+        pid_t ppid;
+        pid_t pgid;
+        pid_t sid;
         unsigned times_scheduled;
         String name;
         String state;
         String user;
-        String priority;
+        String pledge;
+        String veil;
+        u32 cpu;
+        u32 priority;
+        u32 effective_priority;
         size_t amount_virtual;
         size_t amount_resident;
+        size_t amount_dirty_private;
+        size_t amount_clean_inode;
         size_t amount_purgeable_volatile;
         size_t amount_purgeable_nonvolatile;
         unsigned syscall_count;
@@ -95,11 +151,12 @@ private:
 
     HashMap<uid_t, String> m_usernames;
     HashMap<PidAndTid, NonnullOwnPtr<Thread>> m_threads;
+    NonnullOwnPtrVector<CpuInfo> m_cpus;
     Vector<PidAndTid> m_pids;
-    RefPtr<GraphicsBitmap> m_generic_process_icon;
-    RefPtr<GraphicsBitmap> m_high_priority_icon;
-    RefPtr<GraphicsBitmap> m_low_priority_icon;
-    RefPtr<GraphicsBitmap> m_normal_priority_icon;
+    RefPtr<Gfx::Bitmap> m_generic_process_icon;
+    RefPtr<Gfx::Bitmap> m_high_priority_icon;
+    RefPtr<Gfx::Bitmap> m_low_priority_icon;
+    RefPtr<Gfx::Bitmap> m_normal_priority_icon;
 };
 
 namespace AK {

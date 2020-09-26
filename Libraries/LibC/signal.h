@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #pragma once
 
 #include <signal_numbers.h>
@@ -9,8 +35,22 @@ typedef void (*__sighandler_t)(int);
 typedef __sighandler_t sighandler_t;
 
 typedef uint32_t sigset_t;
-typedef void siginfo_t;
 typedef uint32_t sig_atomic_t;
+
+union sigval {
+    int sival_int;
+    void* sival_ptr;
+};
+
+typedef struct siginfo {
+    int si_signo;
+    int si_code;
+    pid_t si_pid;
+    uid_t si_uid;
+    void* si_addr;
+    int si_status;
+    union sigval si_value;
+} siginfo_t;
 
 struct sigaction {
     union {
@@ -24,6 +64,7 @@ struct sigaction {
 int kill(pid_t, int sig);
 int killpg(int pgrp, int sig);
 sighandler_t signal(int sig, sighandler_t);
+int pthread_sigmask(int how, const sigset_t* set, sigset_t* ol_dset);
 int sigaction(int sig, const struct sigaction* act, struct sigaction* old_act);
 int sigemptyset(sigset_t*);
 int sigfillset(sigset_t*);
@@ -55,5 +96,12 @@ extern const char* sys_siglist[NSIG];
 #define SIG_BLOCK 0
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
+
+#define CLD_EXITED 0
+#define CLD_KILLED 1
+#define CLD_DUMPED 2
+#define CLD_TRAPPED 3
+#define CLD_STOPPED 4
+#define CLD_CONTINUED 5
 
 __END_DECLS

@@ -1,21 +1,48 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/ByteBuffer.h>
 #include <AK/String.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
-#include <LibCore/CElapsedTimer.h>
+#include <LibCore/ElapsedTimer.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 struct Result {
     u64 write_bps;
     u64 read_bps;
 };
 
-Result average_result(const Vector<Result>& results)
+static Result average_result(const Vector<Result>& results)
 {
     Result average;
 
@@ -30,13 +57,13 @@ Result average_result(const Vector<Result>& results)
     return average;
 }
 
-void exit_with_usage(int rc)
+static void exit_with_usage(int rc)
 {
     fprintf(stderr, "Usage: disk_benchmark [-h] [-d directory] [-t time_per_benchmark] [-f file_size1,file_size2,...] [-b block_size1,block_size2,...]\n");
     exit(rc);
 }
 
-Result benchmark(const String& filename, int file_size, int block_size, ByteBuffer& buffer, bool allow_cache);
+static Result benchmark(const String& filename, int file_size, int block_size, ByteBuffer& buffer, bool allow_cache);
 
 int main(int argc, char** argv)
 {
@@ -93,7 +120,7 @@ int main(int argc, char** argv)
             Vector<Result> results;
 
             printf("Running: file_size=%d block_size=%d\n", file_size, block_size);
-            CElapsedTimer timer;
+            Core::ElapsedTimer timer;
             timer.start();
             while (timer.elapsed() < time_per_benchmark * 1000) {
                 printf(".");
@@ -102,7 +129,7 @@ int main(int argc, char** argv)
                 usleep(100);
             }
             auto average = average_result(results);
-            printf("\nFinished: runs=%d time=%dms write_bps=%llu read_bps=%llu\n", results.size(), timer.elapsed(), average.write_bps, average.read_bps);
+            printf("\nFinished: runs=%zu time=%dms write_bps=%llu read_bps=%llu\n", results.size(), timer.elapsed(), average.write_bps, average.read_bps);
 
             sleep(1);
         }
@@ -116,11 +143,11 @@ int main(int argc, char** argv)
 
 Result benchmark(const String& filename, int file_size, int block_size, ByteBuffer& buffer, bool allow_cache)
 {
-    int flags = O_CREAT | O_TRUNC | O_WRONLY;
+    int flags = O_CREAT | O_TRUNC | O_RDWR;
     if (!allow_cache)
         flags |= O_DIRECT;
 
-    int fd = open(filename.characters(), flags);
+    int fd = open(filename.characters(), flags, 0644);
     if (fd == -1) {
         perror("open");
         exit(1);
@@ -134,7 +161,7 @@ Result benchmark(const String& filename, int file_size, int block_size, ByteBuff
 
     Result res;
 
-    CElapsedTimer timer;
+    Core::ElapsedTimer timer;
 
     timer.start();
     int nwrote = 0;

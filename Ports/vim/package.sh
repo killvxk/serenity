@@ -3,9 +3,8 @@ port=vim
 version=git
 workdir=vim-master
 useconfigure="true"
-curlopts="-L"
 files="https://github.com/vim/vim/archive/master.tar.gz vim-git.tar.gz"
-configopts="--with-tlib=ncurses --with-features=normal"
+configopts="--with-tlib=tinfo --with-features=normal"
 depends="ncurses"
 
 export vim_cv_getcwd_broken=no

@@ -1,0 +1,16 @@
+interface Node : EventTarget {
+
+    readonly attribute DOMString nodeName;
+    readonly attribute Node? firstChild;
+    readonly attribute Node? lastChild;
+    readonly attribute Node? previousSibling;
+    readonly attribute Node? nextSibling;
+    readonly attribute Node? parentNode;
+    readonly attribute Element? parentElement;
+    attribute DOMString textContent;
+
+    Node appendChild(Node node);
+    Node insertBefore(Node node, Node? child);
+
+}
+

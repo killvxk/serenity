@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #pragma once
 
 #include <AK/Function.h>
@@ -6,10 +32,11 @@
 #include <AK/WeakPtr.h>
 #include <Kernel/Net/IPv4Socket.h>
 
-class TCPSocket final : public IPv4Socket
-    , public Weakable<TCPSocket> {
+namespace Kernel {
+
+class TCPSocket final : public IPv4Socket {
 public:
-    static void for_each(Function<void(TCPSocket&)>);
+    static void for_each(Function<void(const TCPSocket&)>);
     static NonnullRefPtr<TCPSocket> create(int protocol);
     virtual ~TCPSocket() override;
 
@@ -121,7 +148,7 @@ public:
     u32 packets_out() const { return m_packets_out; }
     u32 bytes_out() const { return m_bytes_out; }
 
-    void send_tcp_packet(u16 flags, const void* = nullptr, int = 0);
+    [[nodiscard]] int send_tcp_packet(u16 flags, const UserOrKernelBuffer* = nullptr, size_t = 0);
     void send_outgoing_packets();
     void receive_tcp_packet(const TCPPacket&, u16 size);
 
@@ -129,11 +156,15 @@ public:
     static RefPtr<TCPSocket> from_tuple(const IPv4SocketTuple& tuple);
     static RefPtr<TCPSocket> from_endpoints(const IPv4Address& local_address, u16 local_port, const IPv4Address& peer_address, u16 peer_port);
 
+    static Lockable<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>& closing_sockets();
+
     RefPtr<TCPSocket> create_client(const IPv4Address& local_address, u16 local_port, const IPv4Address& peer_address, u16 peer_port);
     void set_originator(TCPSocket& originator) { m_originator = originator.make_weak_ptr(); }
     bool has_originator() { return !!m_originator; }
     void release_to_originator();
     void release_for_accept(RefPtr<TCPSocket>);
+
+    virtual KResult close() override;
 
 protected:
     void set_direction(Direction direction) { m_direction = direction; }
@@ -144,8 +175,10 @@ private:
 
     static NetworkOrdered<u16> compute_tcp_checksum(const IPv4Address& source, const IPv4Address& destination, const TCPPacket&, u16 payload_size);
 
-    virtual int protocol_receive(const KBuffer&, void* buffer, size_t buffer_size, int flags) override;
-    virtual int protocol_send(const void*, int) override;
+    virtual void shut_down_for_writing() override;
+
+    virtual KResultOr<size_t> protocol_receive(const KBuffer&, UserOrKernelBuffer& buffer, size_t buffer_size, int flags) override;
+    virtual KResultOr<size_t> protocol_send(const UserOrKernelBuffer&, size_t) override;
     virtual KResult protocol_connect(FileDescription&, ShouldBlock) override;
     virtual int protocol_allocate_local_port() override;
     virtual bool protocol_is_disconnected() const override;
@@ -156,7 +189,7 @@ private:
     HashMap<IPv4SocketTuple, NonnullRefPtr<TCPSocket>> m_pending_release_for_accept;
     Direction m_direction { Direction::Unspecified };
     Error m_error { Error::None };
-    WeakPtr<NetworkAdapter> m_adapter;
+    RefPtr<NetworkAdapter> m_adapter;
     u32 m_sequence_number { 0 };
     u32 m_ack_number { 0 };
     State m_state { State::Closed };
@@ -166,12 +199,14 @@ private:
     u32 m_bytes_out { 0 };
 
     struct OutgoingPacket {
-        u32 ack_number;
+        u32 ack_number { 0 };
         ByteBuffer buffer;
         int tx_counter { 0 };
-        timeval tx_time;
+        timeval tx_time { 0, 0 };
     };
 
     Lock m_not_acked_lock { "TCPSocket unacked packets" };
     SinglyLinkedList<OutgoingPacket> m_not_acked;
 };
+
+}

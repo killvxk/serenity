@@ -77,7 +77,7 @@ typedef uint16_t Elf64_Quarter;
 #define EI_OSABI 7      /* OS/ABI ID */
 #define EI_ABIVERSION 8 /* ABI version */
 #define EI_PAD 9        /* start of pad bytes */
-#define EI_NIDENT 16    /* Size of e_ident[] */
+#define EI_NIDENT 16    /* Gfx::Size of e_ident[] */
 
 /* e_ident[] magic number */
 #define ELFMAG0 0x7f     /* e_ident[EI_MAG0] */
@@ -469,6 +469,7 @@ typedef struct {
 
 #define PT_GNU_EH_FRAME 0x6474e550 /* Exception handling info */
 #define PT_GNU_RELRO 0x6474e552    /* Read-only after relocation */
+#define PT_GNU_STACK 0x6474e551    /* Stack permissions info */
 
 #define PT_OPENBSD_RANDOMIZE 0x65a3dbe6 /* fill with random data */
 #define PT_OPENBSD_WXNEEDED 0x65a3dbe7  /* program performs W^X violations */
@@ -701,7 +702,7 @@ struct elf_args {
     u_long arg_entry;     /* program entry point */
     u_long arg_interp;    /* Interpreter load address */
     u_long arg_phaddr;    /* program header address */
-    u_long arg_phentsize; /* Size of program header */
+    u_long arg_phentsize; /* Gfx::Size of program header */
     u_long arg_phnum;     /* Number of program headers */
 };
 
@@ -775,7 +776,17 @@ struct elf_args {
 
 #define ELF_TARG_VER 1 /* The ver for which this code is intended */
 
-#define R_386_32 1
-#define R_386_PC32 2
+/* Relocation types */
+#define R_386_NONE 0
+#define R_386_32 1       /* Symbol + Addend */
+#define R_386_PC32 2     /* Symbol + Addend - Section offset */
+#define R_386_GOT32 3    /* Used by build-time linker to create GOT entry */
+#define R_386_PLT32 4    /* Used by build-time linker to create PLT entry */
+#define R_386_COPY 5     /* https://docs.oracle.com/cd/E23824_01/html/819-0690/chapter4-10454.html#chapter4-84604 */
+#define R_386_GLOB_DAT 6 /* Relation b/w GOT entry and symbol */
+#define R_386_JMP_SLOT 7 /* Fixed up by dynamic loader */
+#define R_386_RELATIVE 8 /* Base address + Addned */
+#define R_386_TLS_TPOFF 14 /* Negative offset into the static TLS storage */
+
 
 #endif /* _SYS_EXEC_ELF_H_ */

@@ -16,6 +16,7 @@ kinds of crashes.
 
 ## Options
 
+* `-A`: Test that all of the following crashes crash as intended.
 * `-s`: Perform a segmentation violation by dereferencing an invalid pointer.
 * `-d`: Perform a division by zero.
 * `-i`: Execute an illegal CPU instruction.
@@ -30,10 +31,15 @@ kinds of crashes.
 * `-S`: Make a syscall from writeable memory.
 * `-x`: Read from recently freed memory. (Tests an opportunistic malloc guard.)
 * `-y`: Write to recently freed memory. (Tests an opportunistic malloc guard.)
+* `-X`: Attempt to execute non-executable memory. (Not mapped with PROT\_EXEC.)
+* `-U`: Attempt to trigger an x86 User Mode Instruction Prevention fault.
+* `-I`: Use an x86 I/O instruction in userspace.
+* `-c`: Read the x86 TSC (Time Stamp Counter) directly.
 
 ## Examples
 
 ```sh
 $ crash -F
+Testing: "Write to freed memory"
 Shell: crash(33) exitied due to signal "Segmentation violation"
 ```

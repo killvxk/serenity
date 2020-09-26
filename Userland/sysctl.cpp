@@ -1,9 +1,35 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/Vector.h>
-#include <LibCore/CArgsParser.h>
-#include <LibCore/CDirIterator.h>
-#include <LibCore/CFile.h>
+#include <LibCore/ArgsParser.h>
+#include <LibCore/DirIterator.h>
+#include <LibCore/File.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -17,14 +43,14 @@ static String read_var(const String& name)
     builder.append("/proc/sys/");
     builder.append(name);
     auto path = builder.to_string();
-    auto f = CFile::construct(path);
-    if (!f->open(CIODevice::ReadOnly)) {
-        fprintf(stderr, "open: %s", f->error_string());
+    auto f = Core::File::construct(path);
+    if (!f->open(Core::IODevice::ReadOnly)) {
+        fprintf(stderr, "open: %s\n", f->error_string());
         exit(1);
     }
     const auto& b = f->read_all();
     if (f->error() < 0) {
-        fprintf(stderr, "read: %s", f->error_string());
+        fprintf(stderr, "read: %s\n", f->error_string());
         exit(1);
     }
     return String((const char*)b.data(), b.size(), Chomp);
@@ -36,23 +62,23 @@ static void write_var(const String& name, const String& value)
     builder.append("/proc/sys/");
     builder.append(name);
     auto path = builder.to_string();
-    auto f = CFile::construct(path);
-    if (!f->open(CIODevice::WriteOnly)) {
-        fprintf(stderr, "open: %s", f->error_string());
+    auto f = Core::File::construct(path);
+    if (!f->open(Core::IODevice::WriteOnly)) {
+        fprintf(stderr, "open: %s\n", f->error_string());
         exit(1);
     }
     f->write(value);
     if (f->error() < 0) {
-        fprintf(stderr, "write: %s", f->error_string());
+        fprintf(stderr, "write: %s\n", f->error_string());
         exit(1);
     }
 }
 
 static int handle_show_all()
 {
-    CDirIterator di("/proc/sys", CDirIterator::SkipDots);
+    Core::DirIterator di("/proc/sys", Core::DirIterator::SkipDots);
     if (di.has_error()) {
-        fprintf(stderr, "CDirIterator: %s\n", di.error_string());
+        fprintf(stderr, "DirIterator: %s\n", di.error_string());
         return 1;
     }
 
@@ -83,20 +109,23 @@ static int handle_var(const String& var)
 
 int main(int argc, char** argv)
 {
-    CArgsParser args_parser("sysctl");
+    bool show_all = false;
+    const char* var = nullptr;
 
-    args_parser.add_arg("a", "show all variables");
-    args_parser.add_single_value("variable=[value]");
+    Core::ArgsParser args_parser;
+    args_parser.add_option(show_all, "Show all variables", nullptr, 'a');
+    args_parser.add_positional_argument(var, "Command (var[=value])", "command", Core::ArgsParser::Required::No);
+    args_parser.parse(argc, argv);
 
-    CArgsParserResult args = args_parser.parse(argc, argv);
-
-    if (args.is_present("a")) {
-        return handle_show_all();
-    } else if (args.get_single_values().size() != 1) {
-        args_parser.print_usage();
-        return 0;
+    if (var == nullptr) {
+        // Not supplied; assume `-a`.
+        show_all = true;
     }
 
-    Vector<String> values = args.get_single_values();
-    return handle_var(values[0]);
+    if (show_all) {
+        // Ignore `var`, even if it was supplied. Just like the real procps does.
+        return handle_show_all();
+    }
+
+    return handle_var(var);
 }

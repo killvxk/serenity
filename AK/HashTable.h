@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #pragma once
 
 #include <AK/Assertions.h>
@@ -5,11 +31,15 @@
 #include <AK/StdLibExtras.h>
 #include <AK/TemporaryChange.h>
 #include <AK/Traits.h>
-#include <AK/kstdio.h>
 
 namespace AK {
 
-template<typename T, typename = Traits<T>>
+enum class HashSetResult {
+    InsertedNewEntry,
+    ReplacedExistingEntry
+};
+
+template<typename T, typename>
 class HashTable;
 
 template<typename HashTableType, typename ElementType, typename BucketIteratorType>
@@ -54,7 +84,7 @@ public:
 private:
     friend HashTableType;
 
-    explicit HashTableIterator(HashTableType& table, bool is_end, BucketIteratorType bucket_iterator = BucketIteratorType::universal_end(), int bucket_index = 0)
+    explicit HashTableIterator(HashTableType& table, bool is_end, BucketIteratorType bucket_iterator = {}, size_t bucket_index = 0)
         : m_table(table)
         , m_bucket_index(bucket_index)
         , m_is_end(is_end)
@@ -62,7 +92,7 @@ private:
     {
         ASSERT(!table.m_clearing);
         ASSERT(!table.m_rehashing);
-        if (!is_end && !m_table.is_empty() && !(m_bucket_iterator != BucketIteratorType::universal_end())) {
+        if (!is_end && !m_table.is_empty() && m_bucket_iterator.is_end()) {
             m_bucket_iterator = m_table.bucket(0).begin();
             if (m_bucket_iterator.is_end())
                 skip_to_next();
@@ -70,7 +100,7 @@ private:
     }
 
     HashTableType& m_table;
-    int m_bucket_index { 0 };
+    size_t m_bucket_index { 0 };
     bool m_is_end { false };
     BucketIteratorType m_bucket_iterator;
 };
@@ -81,7 +111,12 @@ private:
     using Bucket = SinglyLinkedList<T>;
 
 public:
-    HashTable() {}
+    HashTable() { }
+    HashTable(size_t capacity)
+        : m_buckets(new Bucket[capacity])
+        , m_capacity(capacity)
+    {
+    }
     HashTable(const HashTable& other)
     {
         ensure_capacity(other.size());
@@ -123,21 +158,28 @@ public:
 
     ~HashTable() { clear(); }
     bool is_empty() const { return !m_size; }
-    int size() const { return m_size; }
-    int capacity() const { return m_capacity; }
+    size_t size() const { return m_size; }
+    size_t capacity() const { return m_capacity; }
 
-    void ensure_capacity(int capacity)
+    void ensure_capacity(size_t capacity)
     {
         ASSERT(capacity >= size());
         rehash(capacity);
     }
 
-    void set(const T&);
-    void set(T&&);
+    HashSetResult set(const T&);
+    HashSetResult set(T&&);
+
+    template<typename U, size_t N>
+    void set_from(U (&from_array)[N])
+    {
+        for (size_t i = 0; i < N; ++i) {
+            set(from_array[i]);
+        }
+    }
+
     bool contains(const T&) const;
     void clear();
-
-    void dump() const;
 
     using Iterator = HashTableIterator<HashTable, T, typename Bucket::Iterator>;
     friend Iterator;
@@ -154,7 +196,7 @@ public:
     {
         if (is_empty())
             return end();
-        int bucket_index;
+        size_t bucket_index;
         auto& bucket = lookup_with_hash(hash, &bucket_index);
         auto bucket_iterator = bucket.find(finder);
         if (bucket_iterator != bucket.end())
@@ -167,7 +209,7 @@ public:
     {
         if (is_empty())
             return end();
-        int bucket_index;
+        size_t bucket_index;
         auto& bucket = lookup_with_hash(hash, &bucket_index);
         auto bucket_iterator = bucket.find(finder);
         if (bucket_iterator != bucket.end())
@@ -185,50 +227,53 @@ public:
         return find(TraitsForT::hash(value), [&](auto& other) { return TraitsForT::equals(value, other); });
     }
 
-    void remove(const T& value)
+    bool remove(const T& value)
     {
         auto it = find(value);
-        if (it != end())
+        if (it != end()) {
             remove(it);
+            return true;
+        }
+        return false;
     }
 
     void remove(Iterator);
 
 private:
-    Bucket& lookup(const T&, int* bucket_index = nullptr);
-    const Bucket& lookup(const T&, int* bucket_index = nullptr) const;
+    Bucket& lookup(const T&, size_t* bucket_index = nullptr);
+    const Bucket& lookup(const T&, size_t* bucket_index = nullptr) const;
 
-    Bucket& lookup_with_hash(unsigned hash, int* bucket_index)
+    Bucket& lookup_with_hash(unsigned hash, size_t* bucket_index)
     {
         if (bucket_index)
             *bucket_index = hash % m_capacity;
         return m_buckets[hash % m_capacity];
     }
 
-    const Bucket& lookup_with_hash(unsigned hash, int* bucket_index) const
+    const Bucket& lookup_with_hash(unsigned hash, size_t* bucket_index) const
     {
         if (bucket_index)
             *bucket_index = hash % m_capacity;
         return m_buckets[hash % m_capacity];
     }
 
-    void rehash(int capacity);
+    void rehash(size_t capacity);
     void insert(const T&);
     void insert(T&&);
 
-    Bucket& bucket(int index) { return m_buckets[index]; }
-    const Bucket& bucket(int index) const { return m_buckets[index]; }
+    Bucket& bucket(size_t index) { return m_buckets[index]; }
+    const Bucket& bucket(size_t index) const { return m_buckets[index]; }
 
     Bucket* m_buckets { nullptr };
 
-    int m_size { 0 };
-    int m_capacity { 0 };
+    size_t m_size { 0 };
+    size_t m_capacity { 0 };
     bool m_clearing { false };
     bool m_rehashing { false };
 };
 
 template<typename T, typename TraitsForT>
-void HashTable<T, TraitsForT>::set(T&& value)
+HashSetResult HashTable<T, TraitsForT>::set(T&& value)
 {
     if (!m_capacity)
         rehash(1);
@@ -236,7 +281,7 @@ void HashTable<T, TraitsForT>::set(T&& value)
     for (auto& e : bucket) {
         if (TraitsForT::equals(e, value)) {
             e = move(value);
-            return;
+            return HashSetResult::ReplacedExistingEntry;
         }
     }
     if (size() >= capacity()) {
@@ -246,10 +291,11 @@ void HashTable<T, TraitsForT>::set(T&& value)
         bucket.append(move(value));
     }
     m_size++;
+    return HashSetResult::InsertedNewEntry;
 }
 
 template<typename T, typename TraitsForT>
-void HashTable<T, TraitsForT>::set(const T& value)
+HashSetResult HashTable<T, TraitsForT>::set(const T& value)
 {
     if (!m_capacity)
         rehash(1);
@@ -257,7 +303,7 @@ void HashTable<T, TraitsForT>::set(const T& value)
     for (auto& e : bucket) {
         if (TraitsForT::equals(e, value)) {
             e = value;
-            return;
+            return HashSetResult::ReplacedExistingEntry;
         }
     }
     if (size() >= capacity()) {
@@ -267,20 +313,21 @@ void HashTable<T, TraitsForT>::set(const T& value)
         bucket.append(value);
     }
     m_size++;
+    return HashSetResult::InsertedNewEntry;
 }
 
 template<typename T, typename TraitsForT>
-void HashTable<T, TraitsForT>::rehash(int new_capacity)
+void HashTable<T, TraitsForT>::rehash(size_t new_capacity)
 {
     TemporaryChange<bool> change(m_rehashing, true);
     new_capacity *= 2;
     auto* new_buckets = new Bucket[new_capacity];
     auto* old_buckets = m_buckets;
-    int old_capacity = m_capacity;
+    size_t old_capacity = m_capacity;
     m_buckets = new_buckets;
     m_capacity = new_capacity;
 
-    for (int i = 0; i < old_capacity; ++i) {
+    for (size_t i = 0; i < old_capacity; ++i) {
         for (auto& value : old_buckets[i]) {
             insert(move(value));
         }
@@ -337,7 +384,7 @@ void HashTable<T, TraitsForT>::remove(Iterator it)
 }
 
 template<typename T, typename TraitsForT>
-auto HashTable<T, TraitsForT>::lookup(const T& value, int* bucket_index) -> Bucket&
+auto HashTable<T, TraitsForT>::lookup(const T& value, size_t* bucket_index) -> Bucket&
 {
     unsigned hash = TraitsForT::hash(value);
     if (bucket_index)
@@ -346,27 +393,12 @@ auto HashTable<T, TraitsForT>::lookup(const T& value, int* bucket_index) -> Buck
 }
 
 template<typename T, typename TraitsForT>
-auto HashTable<T, TraitsForT>::lookup(const T& value, int* bucket_index) const -> const Bucket&
+auto HashTable<T, TraitsForT>::lookup(const T& value, size_t* bucket_index) const -> const Bucket&
 {
     unsigned hash = TraitsForT::hash(value);
     if (bucket_index)
         *bucket_index = hash % m_capacity;
     return m_buckets[hash % m_capacity];
-}
-
-template<typename T, typename TraitsForT>
-void HashTable<T, TraitsForT>::dump() const
-{
-    kprintf("HashTable{%p} m_size=%u, m_capacity=%u, m_buckets=%p\n", this, m_size, m_capacity, m_buckets);
-    for (int i = 0; i < m_capacity; ++i) {
-        auto& bucket = m_buckets[i];
-        kprintf("Bucket %u\n", i);
-        for (auto& e : bucket) {
-            kprintf("  > ");
-            TraitsForT::dump(e);
-            kprintf("\n");
-        }
-    }
 }
 
 }

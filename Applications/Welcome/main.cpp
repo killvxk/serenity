@@ -1,150 +1,258 @@
-#include <AK/String.h>
-#include <AK/Vector.h>
-#include <LibDraw/PNGLoader.h>
-#include <LibGUI/GApplication.h>
-#include <LibGUI/GBoxLayout.h>
-#include <LibGUI/GButton.h>
-#include <LibGUI/GDesktop.h>
-#include <LibGUI/GLabel.h>
-#include <LibGUI/GStackWidget.h>
-#include <LibGUI/GWindow.h>
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 
+#include "BackgroundWidget.h"
 #include "TextWidget.h"
-
-extern const u8 _binary_background_png_start[];
-extern const u8 _binary_background_png_size;
+#include "UnuncheckableButton.h"
+#include <AK/Optional.h>
+#include <AK/String.h>
+#include <AK/StringBuilder.h>
+#include <AK/Vector.h>
+#include <LibCore/File.h>
+#include <LibGUI/Application.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/Button.h>
+#include <LibGUI/ImageWidget.h>
+#include <LibGUI/Label.h>
+#include <LibGUI/MessageBox.h>
+#include <LibGUI/StackWidget.h>
+#include <LibGUI/Window.h>
+#include <LibGfx/Bitmap.h>
+#include <LibGfx/Font.h>
+#include <stdio.h>
+#include <unistd.h>
 
 struct ContentPage {
     String menu_name;
     String title;
+    String icon = String::empty();
     Vector<String> content;
 };
 
+static Optional<Vector<ContentPage>> parse_welcome_file(const String& path)
+{
+    const auto error = Optional<Vector<ContentPage>>();
+    auto file = Core::File::construct(path);
+
+    if (!file->open(Core::IODevice::ReadOnly))
+        return error;
+
+    Vector<ContentPage> pages;
+    StringBuilder current_output_line;
+    bool started = false;
+    ContentPage current;
+    while (true) {
+        auto buffer = file->read_line(4096);
+        if (buffer.is_null()) {
+            if (file->error()) {
+                file->close();
+                return error;
+            }
+
+            break;
+        }
+
+        auto line = String((char*)buffer.data());
+        if (line.length() > 1)
+            line = line.substring(0, line.length() - 1); // remove newline
+        switch (line[0]) {
+        case '*':
+            dbg() << "menu_item line:\t" << line;
+            if (started)
+                pages.append(current);
+            else
+                started = true;
+
+            current = {};
+            current.menu_name = line.substring(2, line.length() - 2);
+            break;
+        case '$':
+            dbg() << "icon line: \t" << line;
+            current.icon = line.substring(2, line.length() - 2);
+            break;
+        case '>':
+            dbg() << "title line:\t" << line;
+            current.title = line.substring(2, line.length() - 2);
+            break;
+        case '\n':
+            dbg() << "newline";
+
+            if (!current_output_line.to_string().is_empty())
+                current.content.append(current_output_line.to_string());
+            current_output_line.clear();
+            break;
+        case '#':
+            dbg() << "comment line:\t" << line;
+            break;
+        default:
+            dbg() << "content line:\t" << line;
+            if (current_output_line.length() != 0)
+                current_output_line.append(' ');
+            current_output_line.append(line);
+            break;
+        }
+    }
+
+    if (started) {
+        current.content.append(current_output_line.to_string());
+        pages.append(current);
+    }
+
+    file->close();
+    return pages;
+}
+
 int main(int argc, char** argv)
 {
-    Vector<ContentPage> pages = {
-        {
-            "Welcome",
-            "Welcome",
-            {
-                "Welcome to the exciting new world of Serenity, where the year is 1998 and the leading OS vendor has decided to merge their flagship product with a Unix-like kernel.",
-                "Sit back and relax as you take a brief tour of the options available on this screen.",
-                "If you want to explore an option, just click it.",
-            },
-        },
-        {
-            "Register Now",
-            "Register Now!",
-            {
-                "Registering your copy of Serenity opens the doors to full integration of Serenity into your life, your being, and your soul.",
-                "By registering Serenity, you enter into the draw to win a lifetime supply of milk, delivered fresh each day by a mystical horse wearing a full tuxedo.",
-                "To register, simply write your contact details on a piece of paper and hold it up to your monitor.",
-            },
-        },
-        {
-            "Connect to the Internet",
-            "Connect to the Internet",
-            {
-                "On the Internet, you can correspond through electronic mail (e-mail), get the latest news and financial information, and visit Web sites around the world, most of which will make you really angry.",
-                "Serenity includes several internet applications, such as an IRC (Internet relay chat) client, 4chan browser, telnet server, and basic utilities like ping.",
-                "Come chat with us today! How bad can it be?",
-            },
-        },
-        {
-            "Have fun",
-            "Play Some Games!",
-            {
-                "Serenity includes several games built right into the base system. These include the classic game Snake and the anti-productivity mainstay Minesweeper.",
-                "With a little extra effort, you can even play the original id Software hit DOOM, albeit without sound. No sound just means you won't alert your boss, so it's more of a feature than a limitation.",
-            },
-        },
-    };
+    if (pledge("stdio shared_buffer rpath unix cpath fattr", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
 
-    GApplication app(argc, argv);
+    auto app = GUI::Application::construct(argc, argv);
 
-    auto window = GWindow::construct();
-    window->set_title("Welcome to Serenity");
-    Rect window_rect { 0, 0, 640, 360 };
-    window_rect.center_within(GDesktop::the().rect());
-    window->set_resizable(true);
-    window->set_rect(window_rect);
+    if (pledge("stdio shared_buffer rpath", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
 
-    auto background = GLabel::construct();
-    window->set_main_widget(background);
-    background->set_fill_with_background_color(true);
-    background->set_layout(make<GBoxLayout>(Orientation::Vertical));
-    background->layout()->set_margins({ 8, 8, 8, 8 });
-    background->layout()->set_spacing(8);
-    background->set_icon(load_png_from_memory((const u8*)&_binary_background_png_start, (size_t)&_binary_background_png_size));
-    background->set_size_policy(SizePolicy::Fill, SizePolicy::Fill);
-    background->set_preferred_size(background->icon()->size());
+    if (unveil("/res", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    unveil(nullptr, nullptr);
+
+    Optional<Vector<ContentPage>> _pages = parse_welcome_file("/res/welcome.txt");
+    if (!_pages.has_value()) {
+        GUI::MessageBox::show(nullptr, "Could not open Welcome file.", "Welcome", GUI::MessageBox::Type::Error);
+        return 1;
+    }
+    auto pages = _pages.value();
+
+    auto window = GUI::Window::construct();
+    window->set_title("Welcome");
+    window->resize(640, 360);
+    window->center_on_screen();
+
+    auto& background = window->set_main_widget<BackgroundWidget>();
+    background.set_fill_with_background_color(false);
+    background.set_layout<GUI::VerticalBoxLayout>();
+    background.layout()->set_margins({ 16, 8, 16, 8 });
+    background.layout()->set_spacing(8);
+    background.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fill);
 
     //
     // header
     //
 
-    auto header = GLabel::construct(background.ptr());
-    header->set_font(Font::default_bold_font());
-    header->set_text("Welcome to Serenity");
-    header->set_text_alignment(TextAlignment::CenterLeft);
-    header->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    header->set_preferred_size(0, 30);
+    auto& header = background.add<GUI::Label>();
+    header.set_font(Gfx::Font::load_from_file("/res/fonts/PebbletonBold14.font"));
+    header.set_text("Welcome to SerenityOS!");
+    header.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+    header.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
+    header.set_preferred_size(0, 30);
 
     //
     // main section
     //
 
-    auto main_section = GWidget::construct(background.ptr());
-    main_section->set_layout(make<GBoxLayout>(Orientation::Horizontal));
-    main_section->layout()->set_margins({ 0, 0, 0, 0 });
-    main_section->layout()->set_spacing(8);
-    main_section->set_size_policy(SizePolicy::Fill, SizePolicy::Fill);
+    auto& main_section = background.add<GUI::Widget>();
+    main_section.set_layout<GUI::HorizontalBoxLayout>();
+    main_section.layout()->set_margins({ 0, 0, 0, 0 });
+    main_section.layout()->set_spacing(8);
+    main_section.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fill);
 
-    auto menu = GWidget::construct(main_section.ptr());
-    menu->set_layout(make<GBoxLayout>(Orientation::Vertical));
-    menu->layout()->set_margins({ 0, 0, 0, 0 });
-    menu->layout()->set_spacing(8);
-    menu->set_size_policy(SizePolicy::Fixed, SizePolicy::Fill);
-    menu->set_preferred_size(200, 0);
+    auto& menu = main_section.add<GUI::Widget>();
+    menu.set_layout<GUI::VerticalBoxLayout>();
+    menu.layout()->set_margins({ 0, 0, 0, 0 });
+    menu.layout()->set_spacing(4);
+    menu.set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
+    menu.set_preferred_size(100, 0);
 
-    auto stack = GStackWidget::construct(main_section);
-    stack->set_size_policy(SizePolicy::Fill, SizePolicy::Fill);
+    auto& stack = main_section.add<GUI::StackWidget>();
+    stack.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fill);
 
+    bool first = true;
     for (auto& page : pages) {
-        auto content = GWidget::construct(stack.ptr());
-        content->set_layout(make<GBoxLayout>(Orientation::Vertical));
-        content->layout()->set_margins({ 0, 0, 0, 0 });
-        content->layout()->set_spacing(8);
-        content->set_size_policy(SizePolicy::Fill, SizePolicy::Fill);
+        auto& content = stack.add<GUI::Widget>();
+        content.set_layout<GUI::VerticalBoxLayout>();
+        content.layout()->set_margins({ 0, 0, 0, 0 });
+        content.layout()->set_spacing(8);
+        content.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fill);
 
-        auto content_title = GLabel::construct(content);
-        content_title->set_font(Font::default_bold_font());
-        content_title->set_text(page.title);
-        content_title->set_text_alignment(TextAlignment::CenterLeft);
-        content_title->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-        content_title->set_preferred_size(0, 10);
+        auto& title_box = content.add<GUI::Widget>();
+        title_box.set_layout<GUI::HorizontalBoxLayout>();
+        title_box.layout()->set_spacing(4);
+        title_box.set_preferred_size(0, 16);
+        title_box.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
 
-        for (auto& paragraph : page.content) {
-            auto content_text = TextWidget::construct(content);
-            content_text->set_font(Font::default_font());
-            content_text->set_text(paragraph);
-            content_text->set_text_alignment(TextAlignment::TopLeft);
-            content_text->set_line_height(12);
-            content_text->wrap_and_set_height();
+        if (!page.icon.is_empty()) {
+            auto& icon = title_box.add<GUI::ImageWidget>();
+            icon.set_preferred_size(16, 16);
+            icon.set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fixed);
+            icon.load_from_file(page.icon);
         }
 
-        auto menu_option = GButton::construct(menu);
-        menu_option->set_font(Font::default_font());
-        menu_option->set_text(page.menu_name);
-        menu_option->set_text_alignment(TextAlignment::CenterLeft);
-        menu_option->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-        menu_option->set_preferred_size(0, 20);
-        menu_option->on_click = [content = content.ptr(), &stack](auto&) {
-            stack->set_active_widget(content);
+        auto& content_title = title_box.add<GUI::Label>();
+        content_title.set_font(Gfx::Font::default_bold_font());
+        content_title.set_text(page.title);
+        content_title.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        content_title.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
+        content_title.set_preferred_size(0, 10);
+
+        for (auto& paragraph : page.content) {
+            auto& content_text = content.add<TextWidget>();
+            content_text.set_font(Gfx::Font::default_font());
+            content_text.set_text(paragraph);
+            content_text.set_text_alignment(Gfx::TextAlignment::TopLeft);
+            content_text.set_line_height(12);
+            content_text.wrap_and_set_height();
+        }
+
+        auto& menu_option = menu.add<UnuncheckableButton>();
+        menu_option.set_font(Gfx::Font::default_font());
+        menu_option.set_text(page.menu_name);
+        menu_option.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        menu_option.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
+        menu_option.set_preferred_size(0, 20);
+        menu_option.set_checkable(true);
+        menu_option.set_exclusive(true);
+
+        if (first)
+            menu_option.set_checked(true);
+
+        menu_option.on_click = [content = &content, &stack](auto) {
+            stack.set_active_widget(content);
             content->invalidate_layout();
         };
+
+        first = false;
     }
 
     window->show();
-    return app.exec();
+    return app->exec();
 }

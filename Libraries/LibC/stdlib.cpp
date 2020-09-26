@@ -1,71 +1,104 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/Assertions.h>
 #include <AK/HashMap.h>
+#include <AK/Noncopyable.h>
 #include <AK/StdLibExtras.h>
-#include <AK/String.h>
 #include <AK/Types.h>
 #include <AK/Utf8View.h>
-#include <Kernel/Syscall.h>
+#include <Kernel/API/Syscall.h>
 #include <alloca.h>
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/internals.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-template<typename T, T min_value, T max_value>
-static inline T strtol_impl(const char* nptr, char** endptr, int base)
+static void strtons(const char* str, char** endptr)
 {
-    errno = 0;
-
-    if (base < 0 || base == 1 || base > 36) {
-        errno = EINVAL;
-        if (endptr)
-            *endptr = const_cast<char*>(nptr);
-        return 0;
+    assert(endptr);
+    char* ptr = const_cast<char*>(str);
+    while (isspace(*ptr)) {
+        ptr += 1;
     }
+    *endptr = ptr;
+}
 
-    const char* p = nptr;
-    while (isspace(*p))
-        ++p;
+enum Sign {
+    Negative,
+    Positive,
+};
 
-    bool is_negative = false;
-    if (*p == '-') {
-        is_negative = true;
-        ++p;
+static Sign strtosign(const char* str, char** endptr)
+{
+    assert(endptr);
+    if (*str == '+') {
+        *endptr = const_cast<char*>(str + 1);
+        return Sign::Positive;
+    } else if (*str == '-') {
+        *endptr = const_cast<char*>(str + 1);
+        return Sign::Negative;
     } else {
-        if (*p == '+')
-            ++p;
+        *endptr = const_cast<char*>(str);
+        return Sign::Positive;
+    }
+}
+
+enum DigitConsumeDecision {
+    Consumed,
+    PosOverflow,
+    NegOverflow,
+    Invalid,
+};
+
+template<typename T, T min_value, T max_value>
+class NumParser {
+    AK_MAKE_NONMOVABLE(NumParser);
+
+public:
+    NumParser(Sign sign, int base)
+        : m_base(base)
+        , m_num(0)
+        , m_sign(sign)
+    {
+        m_cutoff = positive() ? (max_value / base) : (min_value / base);
+        m_max_digit_after_cutoff = positive() ? (max_value % base) : (min_value % base);
     }
 
-    if (base == 0 || base == 16) {
-        if (base == 0)
-            base = 10;
-        if (*p == '0') {
-            if (*(p + 1) == 'X' || *(p + 1) == 'x') {
-                p += 2;
-                base = 16;
-            } else if (base != 16) {
-                base = 8;
-            }
-        }
-    }
-
-    long cutoff_point = is_negative ? (min_value / base) : (max_value / base);
-    int max_valid_digit_at_cutoff_point = is_negative ? (min_value % base) : (max_value % base);
-
-    long num = 0;
-
-    bool has_overflowed = false;
-    unsigned digits_consumed = 0;
-
-    for (;;) {
-        char ch = *(p++);
+    int parse_digit(char ch)
+    {
         int digit;
         if (isdigit(ch))
             digit = ch - '0';
@@ -74,65 +107,128 @@ static inline T strtol_impl(const char* nptr, char** endptr, int base)
         else if (isupper(ch))
             digit = ch - ('A' - 10);
         else
-            break;
+            return -1;
 
-        if (digit >= base)
-            break;
+        if (static_cast<T>(digit) >= m_base)
+            return -1;
 
-        if (has_overflowed)
-            continue;
+        return digit;
+    }
 
-        bool is_past_cutoff = is_negative ? num < cutoff_point : num > cutoff_point;
+    DigitConsumeDecision consume(char ch)
+    {
+        int digit = parse_digit(ch);
+        if (digit == -1)
+            return DigitConsumeDecision::Invalid;
 
-        if (is_past_cutoff || (num == cutoff_point && digit > max_valid_digit_at_cutoff_point)) {
-            has_overflowed = true;
-            num = is_negative ? min_value : max_value;
-            errno = ERANGE;
+        if (!can_append_digit(digit)) {
+            if (m_sign != Sign::Negative) {
+                return DigitConsumeDecision::PosOverflow;
+            } else {
+                return DigitConsumeDecision::NegOverflow;
+            }
+        }
+
+        m_num *= m_base;
+        m_num += positive() ? digit : -digit;
+
+        return DigitConsumeDecision::Consumed;
+    }
+
+    T number() const { return m_num; };
+
+private:
+    bool can_append_digit(int digit)
+    {
+        const bool is_below_cutoff = positive() ? (m_num < m_cutoff) : (m_num > m_cutoff);
+
+        if (is_below_cutoff) {
+            return true;
         } else {
-            num *= base;
-            num += is_negative ? -digit : digit;
-            ++digits_consumed;
+            return m_num == m_cutoff && digit < m_max_digit_after_cutoff;
         }
     }
 
-    if (endptr) {
-        if (has_overflowed || digits_consumed > 0)
-            *endptr = const_cast<char*>(p - 1);
-        else
-            *endptr = const_cast<char*>(nptr);
+    bool positive() const
+    {
+        return m_sign != Sign::Negative;
     }
-    return num;
+
+    const T m_base;
+    T m_num;
+    T m_cutoff;
+    int m_max_digit_after_cutoff;
+    Sign m_sign;
+};
+
+typedef NumParser<int, INT_MIN, INT_MAX> IntParser;
+typedef NumParser<long long, LONG_LONG_MIN, LONG_LONG_MAX> LongLongParser;
+typedef NumParser<unsigned long long, 0ULL, ULONG_LONG_MAX> ULongLongParser;
+
+static bool is_either(char* str, int offset, char lower, char upper)
+{
+    char ch = *(str + offset);
+    return ch == lower || ch == upper;
+}
+
+__attribute__((warn_unused_result)) int __generate_unique_filename(char* pattern)
+{
+    size_t length = strlen(pattern);
+
+    if (length < 6 || memcmp(pattern + length - 6, "XXXXXX", 6)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    size_t start = length - 6;
+
+    static constexpr char random_characters[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        for (int i = 0; i < 6; ++i)
+            pattern[start + i] = random_characters[(rand() % sizeof(random_characters))];
+        struct stat st;
+        int rc = lstat(pattern, &st);
+        if (rc < 0 && errno == ENOENT)
+            return 0;
+    }
+    errno = EEXIST;
+    return -1;
 }
 
 extern "C" {
 
-typedef void (*__atexit_handler)();
-static int __atexit_handler_count = 0;
-static __atexit_handler __atexit_handlers[32];
-
 void exit(int status)
 {
-    for (int i = 0; i < __atexit_handler_count; ++i)
-        __atexit_handlers[i]();
+    __cxa_finalize(nullptr);
+
+    if (getenv("LIBC_DUMP_MALLOC_STATS"))
+        serenity_dump_malloc_stats();
+
     extern void _fini();
     _fini();
     fflush(stdout);
     fflush(stderr);
     _exit(status);
-    ASSERT_NOT_REACHED();
+}
+
+static void __atexit_to_cxa_atexit(void* handler)
+{
+    reinterpret_cast<void (*)()>(handler)();
 }
 
 int atexit(void (*handler)())
 {
-    ASSERT(__atexit_handler_count < 32);
-    __atexit_handlers[__atexit_handler_count++] = handler;
-    return 0;
+    return __cxa_atexit(__atexit_to_cxa_atexit, (void*)handler, nullptr);
 }
 
 void abort()
 {
+    // For starters, send ourselves a SIGABRT.
     raise(SIGABRT);
-    ASSERT_NOT_REACHED();
+    // If that didn't kill us, try harder.
+    raise(SIGKILL);
+    _exit(127);
 }
 
 static HashTable<const char*> s_malloced_environment_variables;
@@ -195,7 +291,7 @@ int unsetenv(const char* name)
 
 int setenv(const char* name, const char* value, int overwrite)
 {
-    if (!overwrite && !getenv(name))
+    if (!overwrite && getenv(name))
         return 0;
     auto length = strlen(name) + strlen(value) + 2;
     auto* var = (char*)malloc(length);
@@ -256,190 +352,313 @@ int putenv(char* new_var)
 
 double strtod(const char* str, char** endptr)
 {
-    size_t len = strlen(str);
-    size_t weight = 1;
-    int exp_val = 0;
-    double value = 0.0f;
-    double fraction = 0.0f;
-    bool has_sign = false;
-    bool is_negative = false;
-    bool is_fractional = false;
-    bool is_scientific = false;
+    // Parse spaces, sign, and base
+    char* parse_ptr = const_cast<char*>(str);
+    strtons(parse_ptr, &parse_ptr);
+    const Sign sign = strtosign(parse_ptr, &parse_ptr);
 
-    if (str[0] == '-') {
-        is_negative = true;
-        has_sign = true;
+    // Parse inf/nan, if applicable.
+    if (is_either(parse_ptr, 0, 'i', 'I')) {
+        if (is_either(parse_ptr, 1, 'n', 'N')) {
+            if (is_either(parse_ptr, 2, 'f', 'F')) {
+                parse_ptr += 3;
+                if (is_either(parse_ptr, 0, 'i', 'I')) {
+                    if (is_either(parse_ptr, 1, 'n', 'N')) {
+                        if (is_either(parse_ptr, 2, 'i', 'I')) {
+                            if (is_either(parse_ptr, 3, 't', 'T')) {
+                                if (is_either(parse_ptr, 4, 'y', 'Y')) {
+                                    parse_ptr += 5;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (endptr)
+                    *endptr = parse_ptr;
+                // Don't set errno to ERANGE here:
+                // The caller may want to distinguish between "input is
+                // literal infinity" and "input is not literal infinity
+                // but did not fit into double".
+                if (sign != Sign::Negative) {
+                    return __builtin_huge_val();
+                } else {
+                    return -__builtin_huge_val();
+                }
+            }
+        }
     }
-    if (str[0] == '+') {
-        has_sign = true;
+    if (is_either(parse_ptr, 0, 'n', 'N')) {
+        if (is_either(parse_ptr, 1, 'a', 'A')) {
+            if (is_either(parse_ptr, 2, 'n', 'N')) {
+                if (endptr)
+                    *endptr = parse_ptr + 3;
+                errno = ERANGE;
+                if (sign != Sign::Negative) {
+                    return __builtin_nan("");
+                } else {
+                    return -__builtin_nan("");
+                }
+            }
+        }
     }
-    size_t i;
-    for (i = has_sign; i < len; i++) {
 
-        // Looks like we're about to start working on the fractional part
-        if (str[i] == '.') {
-            is_fractional = true;
+    // Parse base
+    char exponent_lower;
+    char exponent_upper;
+    int base = 10;
+    if (*parse_ptr == '0') {
+        const char base_ch = *(parse_ptr + 1);
+        if (base_ch == 'x' || base_ch == 'X') {
+            base = 16;
+            parse_ptr += 2;
+        }
+    }
+
+    if (base == 10) {
+        exponent_lower = 'e';
+        exponent_upper = 'E';
+    } else {
+        exponent_lower = 'p';
+        exponent_upper = 'P';
+    }
+
+    // Parse "digits", possibly keeping track of the exponent offset.
+    // We parse the most significant digits and the position in the
+    // base-`base` representation separately. This allows us to handle
+    // numbers like `0.0000000000000000000000000000000000001234` or
+    // `1234567890123456789012345678901234567890` with ease.
+    LongLongParser digits { sign, base };
+    bool digits_usable = false;
+    bool should_continue = true;
+    bool digits_overflow = false;
+    bool after_decimal = false;
+    int exponent = 0;
+    do {
+        if (!after_decimal && *parse_ptr == '.') {
+            after_decimal = true;
+            parse_ptr += 1;
             continue;
         }
 
-        if (str[i] == 'e' || str[i] == 'E') {
-            if (str[i + 1] == '-' || str[i + 1] == '+')
-                exp_val = atoi(str + i + 2);
-            else
-                exp_val = atoi(str + i + 1);
-
-            is_scientific = true;
-            continue;
-        }
-
-        if (str[i] < '0' || str[i] > '9' || exp_val != 0)
-            continue;
-
-        if (is_fractional) {
-            fraction *= 10;
-            fraction += str[i] - '0';
-            weight *= 10;
+        bool is_a_digit;
+        if (digits_overflow) {
+            is_a_digit = digits.parse_digit(*parse_ptr) != -1;
         } else {
-            value = value * 10;
-            value += str[i] - '0';
+            DigitConsumeDecision decision = digits.consume(*parse_ptr);
+            switch (decision) {
+            case DigitConsumeDecision::Consumed:
+                is_a_digit = true;
+                // The very first actual digit must pass here:
+                digits_usable = true;
+                break;
+            case DigitConsumeDecision::PosOverflow:
+                // fallthrough
+            case DigitConsumeDecision::NegOverflow:
+                is_a_digit = true;
+                digits_overflow = true;
+                break;
+            case DigitConsumeDecision::Invalid:
+                is_a_digit = false;
+                break;
+            default:
+                ASSERT_NOT_REACHED();
+            }
+        }
+
+        if (is_a_digit) {
+            exponent -= after_decimal ? 1 : 0;
+            exponent += digits_overflow ? 1 : 0;
+        }
+
+        should_continue = is_a_digit;
+        parse_ptr += should_continue;
+    } while (should_continue);
+
+    if (!digits_usable) {
+        // No actual number value available.
+        if (endptr)
+            *endptr = const_cast<char*>(str);
+        return 0.0;
+    }
+
+    // Parse exponent.
+    // We already know the next character is not a digit in the current base,
+    // nor a valid decimal point. Check whether it's an exponent sign.
+    if (*parse_ptr == exponent_lower || *parse_ptr == exponent_upper) {
+        // Need to keep the old parse_ptr around, in case of rollback.
+        char* old_parse_ptr = parse_ptr;
+        parse_ptr += 1;
+
+        // Can't use atol or strtol here: Must accept excessive exponents,
+        // even exponents >64 bits.
+        Sign exponent_sign = strtosign(parse_ptr, &parse_ptr);
+        IntParser exponent_parser { exponent_sign, base };
+        bool exponent_usable = false;
+        bool exponent_overflow = false;
+        should_continue = true;
+        do {
+            bool is_a_digit;
+            if (exponent_overflow) {
+                is_a_digit = exponent_parser.parse_digit(*parse_ptr) != -1;
+            } else {
+                DigitConsumeDecision decision = exponent_parser.consume(*parse_ptr);
+                switch (decision) {
+                case DigitConsumeDecision::Consumed:
+                    is_a_digit = true;
+                    // The very first actual digit must pass here:
+                    exponent_usable = true;
+                    break;
+                case DigitConsumeDecision::PosOverflow:
+                    // fallthrough
+                case DigitConsumeDecision::NegOverflow:
+                    is_a_digit = true;
+                    exponent_overflow = true;
+                    break;
+                case DigitConsumeDecision::Invalid:
+                    is_a_digit = false;
+                    break;
+                default:
+                    ASSERT_NOT_REACHED();
+                }
+            }
+
+            should_continue = is_a_digit;
+            parse_ptr += should_continue;
+        } while (should_continue);
+
+        if (!exponent_usable) {
+            parse_ptr = old_parse_ptr;
+        } else if (exponent_overflow) {
+            // Technically this is wrong. If someone gives us 5GB of digits,
+            // and then an exponent of -5_000_000_000, the resulting exponent
+            // should be around 0.
+            // However, I think it's safe to assume that we never have to deal
+            // with that many digits anyway.
+            if (sign != Sign::Negative) {
+                exponent = INT_MIN;
+            } else {
+                exponent = INT_MAX;
+            }
+        } else {
+            // Literal exponent is usable and fits in an int.
+            // However, `exponent + exponent_parser.number()` might overflow an int.
+            // This would result in the wrong sign of the exponent!
+            long long new_exponent = static_cast<long long>(exponent) + static_cast<long long>(exponent_parser.number());
+            if (new_exponent < INT_MIN) {
+                exponent = INT_MIN;
+            } else if (new_exponent > INT_MAX) {
+                exponent = INT_MAX;
+            } else {
+                exponent = static_cast<int>(new_exponent);
+            }
         }
     }
 
-    fraction /= weight;
-    value += fraction;
-
-    if (is_scientific) {
-        bool divide = exp_val < 0;
-        if (divide)
-            exp_val *= -1;
-
-        for (int i = 0; i < exp_val; i++) {
-            if (divide)
-                value /= 10;
-            else
-                value *= 10;
-        }
-    }
-    //FIXME: Not entirely sure if this is correct, but seems to work.
+    // Parsing finished. now we only have to compute the result.
     if (endptr)
-        *endptr = const_cast<char*>(str + i);
-    return is_negative ? -value : value;
+        *endptr = const_cast<char*>(parse_ptr);
+
+    // If `digits` is zero, we don't even have to look at `exponent`.
+    if (digits.number() == 0) {
+        if (sign != Sign::Negative) {
+            return 0.0;
+        } else {
+            return -0.0;
+        }
+    }
+
+    // Deal with extreme exponents.
+    // The smallest normal is 2^-1022.
+    // The smallest denormal is 2^-1074.
+    // The largest number in `digits` is 2^63 - 1.
+    // Therefore, if "base^exponent" is smaller than 2^-(1074+63), the result is 0.0 anyway.
+    // This threshold is roughly 5.3566 * 10^-343.
+    // So if the resulting exponent is -344 or lower (closer to -inf),
+    // the result is 0.0 anyway.
+    // We only need to avoid false positives, so we can ignore base 16.
+    if (exponent <= -344) {
+        errno = ERANGE;
+        // Definitely can't be represented more precisely.
+        // I lied, sometimes the result is +0.0, and sometimes -0.0.
+        if (sign != Sign::Negative) {
+            return 0.0;
+        } else {
+            return -0.0;
+        }
+    }
+    // The largest normal is 2^+1024-eps.
+    // The smallest number in `digits` is 1.
+    // Therefore, if "base^exponent" is 2^+1024, the result is INF anyway.
+    // This threshold is roughly 1.7977 * 10^-308.
+    // So if the resulting exponent is +309 or higher,
+    // the result is INF anyway.
+    // We only need to avoid false positives, so we can ignore base 16.
+    if (exponent >= 309) {
+        errno = ERANGE;
+        // Definitely can't be represented more precisely.
+        // I lied, sometimes the result is +INF, and sometimes -INF.
+        if (sign != Sign::Negative) {
+            return __builtin_huge_val();
+        } else {
+            return -__builtin_huge_val();
+        }
+    }
+
+    // TODO: If `exponent` is large, this could be made faster.
+    double value = digits.number();
+    if (exponent < 0) {
+        exponent = -exponent;
+        for (int i = 0; i < exponent; ++i) {
+            value /= base;
+        }
+        if (value == -0.0 || value == +0.0) {
+            errno = ERANGE;
+        }
+    } else if (exponent > 0) {
+        for (int i = 0; i < exponent; ++i) {
+            value *= base;
+        }
+        if (value == -__builtin_huge_val() || value == +__builtin_huge_val()) {
+            errno = ERANGE;
+        }
+    }
+
+    return value;
 }
 
 long double strtold(const char* str, char** endptr)
 {
-    (void)str;
-    (void)endptr;
-    dbgprintf("LibC: strtold: '%s'\n", str);
-    ASSERT_NOT_REACHED();
+    assert(sizeof(double) == sizeof(long double));
+    return strtod(str, endptr);
 }
 
 float strtof(const char* str, char** endptr)
 {
-    (void)str;
-    (void)endptr;
-    dbgprintf("LibC: strtof: '%s'\n", str);
-    ASSERT_NOT_REACHED();
+    return strtod(str, endptr);
 }
 
 double atof(const char* str)
 {
-    size_t len = strlen(str);
-    size_t weight = 1;
-    int exp_val = 0;
-    double value = 0.0f;
-    double fraction = 0.0f;
-    bool has_sign = false;
-    bool is_negative = false;
-    bool is_fractional = false;
-    bool is_scientific = false;
-
-    if (str[0] == '-') {
-        is_negative = true;
-        has_sign = true;
-    }
-    if (str[0] == '+') {
-        has_sign = true;
-    }
-
-    for (size_t i = has_sign; i < len; i++) {
-
-        // Looks like we're about to start working on the fractional part
-        if (str[i] == '.') {
-            is_fractional = true;
-            continue;
-        }
-
-        if (str[i] == 'e' || str[i] == 'E') {
-            if (str[i + 1] == '-' || str[i + 1] == '+')
-                exp_val = atoi(str + i + 2);
-            else
-                exp_val = atoi(str + i + 1);
-
-            is_scientific = true;
-            continue;
-        }
-
-        if (str[i] < '0' || str[i] > '9' || exp_val != 0)
-            continue;
-
-        if (is_fractional) {
-            fraction *= 10;
-            fraction += str[i] - '0';
-            weight *= 10;
-        } else {
-            value = value * 10;
-            value += str[i] - '0';
-        }
-    }
-
-    fraction /= weight;
-    value += fraction;
-
-    if (is_scientific) {
-        bool divide = exp_val < 0;
-        if (divide)
-            exp_val *= -1;
-
-        for (int i = 0; i < exp_val; i++) {
-            if (divide)
-                value /= 10;
-            else
-                value *= 10;
-        }
-    }
-
-    return is_negative ? -value : value;
+    return strtod(str, nullptr);
 }
 
 int atoi(const char* str)
 {
-    size_t len = strlen(str);
-    int value = 0;
-    bool isNegative = false;
-    for (size_t i = 0; i < len; ++i) {
-        if (i == 0 && str[0] == '-') {
-            isNegative = true;
-            continue;
-        }
-        if (str[i] < '0' || str[i] > '9')
-            return value;
-        value = value * 10;
-        value += str[i] - '0';
+    long value = strtol(str, nullptr, 10);
+    if (value > INT_MAX) {
+        return INT_MAX;
     }
-    return isNegative ? -value : value;
+    return value;
 }
 
 long atol(const char* str)
 {
-    static_assert(sizeof(int) == sizeof(long));
-    return atoi(str);
+    return strtol(str, nullptr, 10);
 }
 
 long long atoll(const char* str)
 {
-    dbgprintf("FIXME(Libc): atoll('%s') passing through to atol()\n", str);
-    return atol(str);
+    return strtoll(str, nullptr, 10);
 }
 
 static char ptsname_buf[32];
@@ -452,7 +671,7 @@ char* ptsname(int fd)
 
 int ptsname_r(int fd, char* buffer, size_t size)
 {
-    int rc = syscall(SC_ptsname_r, fd, buffer, size);
+    int rc = syscall(SC_ptsname, fd, buffer, size);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
@@ -489,16 +708,10 @@ int system(const char* command)
     if (!command)
         return 1;
 
-    auto child = fork();
-    if (child < 0)
+    pid_t child;
+    const char* argv[] = { "sh", "-c", command, nullptr };
+    if ((errno = posix_spawn(&child, "/bin/sh", nullptr, nullptr, const_cast<char**>(argv), environ)))
         return -1;
-
-    if (!child) {
-        int rc = execl("/bin/sh", "sh", "-c", command, nullptr);
-        ASSERT(rc < 0);
-        perror("execl");
-        exit(127);
-    }
     int wstatus;
     waitpid(child, &wstatus, 0);
     return WEXITSTATUS(wstatus);
@@ -506,28 +719,9 @@ int system(const char* command)
 
 char* mktemp(char* pattern)
 {
-    int length = strlen(pattern);
-
-    if (length < 6 || !String(pattern).ends_with("XXXXXX")) {
+    if (__generate_unique_filename(pattern) < 0)
         pattern[0] = '\0';
-        errno = EINVAL;
-        return pattern;
-    }
 
-    int start = length - 6;
-
-    static constexpr char random_characters[] = "abcdefghijklmnopqrstuvwxyz0123456789";
-
-    for (int attempt = 0; attempt < 100; ++attempt) {
-        for (int i = 0; i < 6; ++i)
-            pattern[start + i] = random_characters[(rand() % sizeof(random_characters))];
-        struct stat st;
-        int rc = lstat(pattern, &st);
-        if (rc < 0 && errno == ENOENT)
-            return pattern;
-    }
-    pattern[0] = '\0';
-    errno = EEXIST;
     return pattern;
 }
 
@@ -544,47 +738,28 @@ int mkstemp(char* pattern)
 
 char* mkdtemp(char* pattern)
 {
-    int length = strlen(pattern);
-
-    if (length < 6 || !String(pattern).ends_with("XXXXXX")) {
-        errno = EINVAL;
+    if (__generate_unique_filename(pattern) < 0)
         return nullptr;
-    }
 
-    int start = length - 6;
+    if (mkdir(pattern, 0700) < 0)
+        return nullptr;
 
-    static constexpr char random_characters[] = "abcdefghijklmnopqrstuvwxyz0123456789";
-
-    for (int attempt = 0; attempt < 100; ++attempt) {
-        for (int i = 0; i < 6; ++i)
-            pattern[start + i] = random_characters[(rand() % sizeof(random_characters))];
-        struct stat st;
-        int rc = lstat(pattern, &st);
-        if (rc < 0 && errno == ENOENT) {
-            if (mkdir(pattern, 0700) < 0)
-                return nullptr;
-            return pattern;
-        }
-    }
-
-    errno = EEXIST;
-    return nullptr;
+    return pattern;
 }
 
 void* bsearch(const void* key, const void* base, size_t nmemb, size_t size, int (*compar)(const void*, const void*))
 {
-    int low = 0;
-    int high = nmemb - 1;
-    while (low <= high) {
-        int middle = (low + high) / 2;
-        void* middle_memb = const_cast<char*>((const char*)base + middle * size);
+    char* start = static_cast<char*>(const_cast<void*>(base));
+    while (nmemb > 0) {
+        char* middle_memb = start + (nmemb / 2) * size;
         int comparison = compar(key, middle_memb);
-        if (comparison < 0)
-            high = middle - 1;
-        else if (comparison > 0)
-            low = middle + 1;
-        else
+        if (comparison == 0)
             return middle_memb;
+        else if (comparison > 0) {
+            start = middle_memb + size;
+            --nmemb;
+        }
+        nmemb /= 2;
     }
 
     return NULL;
@@ -667,26 +842,174 @@ size_t wcstombs(char* dest, const wchar_t* src, size_t max)
 
 long strtol(const char* str, char** endptr, int base)
 {
-    return strtol_impl<long, LONG_MIN, LONG_MAX>(str, endptr, base);
+    long long value = strtoll(str, endptr, base);
+    if (value < LONG_MIN) {
+        errno = ERANGE;
+        return LONG_MIN;
+    } else if (value > LONG_MAX) {
+        errno = ERANGE;
+        return LONG_MAX;
+    }
+    return value;
 }
 
 unsigned long strtoul(const char* str, char** endptr, int base)
 {
-    auto value = strtol(str, endptr, base);
-    ASSERT(value >= 0);
+    unsigned long long value = strtoull(str, endptr, base);
+    if (value > ULONG_MAX) {
+        errno = ERANGE;
+        return ULONG_MAX;
+    }
     return value;
 }
 
 long long strtoll(const char* str, char** endptr, int base)
 {
-    return strtol_impl<long long, LONG_LONG_MIN, LONG_LONG_MAX>(str, endptr, base);
+    // Parse spaces and sign
+    char* parse_ptr = const_cast<char*>(str);
+    strtons(parse_ptr, &parse_ptr);
+    const Sign sign = strtosign(parse_ptr, &parse_ptr);
+
+    // Parse base
+    if (base == 0) {
+        if (*parse_ptr == '0') {
+            if (tolower(*(parse_ptr + 1)) == 'x') {
+                base = 16;
+                parse_ptr += 2;
+            } else {
+                base = 8;
+            }
+        } else {
+            base = 10;
+        }
+    }
+
+    // Parse actual digits.
+    LongLongParser digits { sign, base };
+    bool digits_usable = false;
+    bool should_continue = true;
+    bool overflow = false;
+    do {
+        bool is_a_digit;
+        if (overflow) {
+            is_a_digit = digits.parse_digit(*parse_ptr) >= 0;
+        } else {
+            DigitConsumeDecision decision = digits.consume(*parse_ptr);
+            switch (decision) {
+            case DigitConsumeDecision::Consumed:
+                is_a_digit = true;
+                // The very first actual digit must pass here:
+                digits_usable = true;
+                break;
+            case DigitConsumeDecision::PosOverflow: // fall-through
+            case DigitConsumeDecision::NegOverflow:
+                is_a_digit = true;
+                overflow = true;
+                break;
+            case DigitConsumeDecision::Invalid:
+                is_a_digit = false;
+                break;
+            default:
+                ASSERT_NOT_REACHED();
+            }
+        }
+
+        should_continue = is_a_digit;
+        parse_ptr += should_continue;
+    } while (should_continue);
+
+    if (!digits_usable) {
+        // No actual number value available.
+        if (endptr)
+            *endptr = const_cast<char*>(str);
+        return 0;
+    }
+
+    if (endptr)
+        *endptr = parse_ptr;
+
+    if (overflow) {
+        errno = ERANGE;
+        if (sign != Sign::Negative) {
+            return LONG_LONG_MAX;
+        } else {
+            return LONG_LONG_MIN;
+        }
+    }
+
+    return digits.number();
 }
 
 unsigned long long strtoull(const char* str, char** endptr, int base)
 {
-    auto value = strtoll(str, endptr, base);
-    ASSERT(value >= 0);
-    return value;
+    // Parse spaces and sign
+    char* parse_ptr = const_cast<char*>(str);
+    strtons(parse_ptr, &parse_ptr);
+
+    // Parse base
+    if (base == 0) {
+        if (*parse_ptr == '0') {
+            if (tolower(*(parse_ptr + 1)) == 'x') {
+                base = 16;
+                parse_ptr += 2;
+            } else {
+                base = 8;
+            }
+        } else {
+            base = 10;
+        }
+    }
+
+    // Parse actual digits.
+    ULongLongParser digits { Sign::Positive, base };
+    bool digits_usable = false;
+    bool should_continue = true;
+    bool overflow = false;
+    do {
+        bool is_a_digit;
+        if (overflow) {
+            is_a_digit = digits.parse_digit(*parse_ptr) >= 0;
+        } else {
+            DigitConsumeDecision decision = digits.consume(*parse_ptr);
+            switch (decision) {
+            case DigitConsumeDecision::Consumed:
+                is_a_digit = true;
+                // The very first actual digit must pass here:
+                digits_usable = true;
+                break;
+            case DigitConsumeDecision::PosOverflow: // fall-through
+            case DigitConsumeDecision::NegOverflow:
+                is_a_digit = true;
+                overflow = true;
+                break;
+            case DigitConsumeDecision::Invalid:
+                is_a_digit = false;
+                break;
+            default:
+                ASSERT_NOT_REACHED();
+            }
+        }
+
+        should_continue = is_a_digit;
+        parse_ptr += should_continue;
+    } while (should_continue);
+
+    if (!digits_usable) {
+        // No actual number value available.
+        if (endptr)
+            *endptr = const_cast<char*>(str);
+        return 0;
+    }
+
+    if (endptr)
+        *endptr = parse_ptr;
+
+    if (overflow) {
+        errno = ERANGE;
+        return LONG_LONG_MAX;
+    }
+
+    return digits.number();
 }
 
 // Serenity's PRNG is not cryptographically secure. Do not rely on this for
@@ -715,15 +1038,42 @@ uint32_t arc4random_uniform(uint32_t max_bounds)
 
 char* realpath(const char* pathname, char* buffer)
 {
+    if (!pathname) {
+        errno = EFAULT;
+        return nullptr;
+    }
     size_t size = PATH_MAX;
     if (buffer == nullptr)
         buffer = (char*)malloc(size);
-    int rc = syscall(SC_realpath, pathname, buffer, size);
+    Syscall::SC_realpath_params params { { pathname, strlen(pathname) }, { buffer, size } };
+    int rc = syscall(SC_realpath, &params);
     if (rc < 0) {
         errno = -rc;
         return nullptr;
     }
     errno = 0;
     return buffer;
+}
+
+int posix_openpt(int flags)
+{
+    if (flags & ~(O_RDWR | O_NOCTTY | O_CLOEXEC)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    return open("/dev/ptmx", flags);
+}
+
+int grantpt(int fd)
+{
+    (void)fd;
+    return 0;
+}
+
+int unlockpt(int fd)
+{
+    (void)fd;
+    return 0;
 }
 }

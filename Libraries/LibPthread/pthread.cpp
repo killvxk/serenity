@@ -1,34 +1,89 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/Assertions.h>
 #include <AK/Atomic.h>
-#include <AK/InlineLinkedList.h>
 #include <AK/StdLibExtras.h>
-#include <Kernel/Syscall.h>
+#include <Kernel/API/Syscall.h>
 #include <limits.h>
 #include <pthread.h>
+#include <serenity.h>
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
-#define PTHREAD_DEBUG
+//#define PTHREAD_DEBUG
 
 namespace {
 using PthreadAttrImpl = Syscall::SC_create_thread_params;
 } // end anonymous namespace
 
-constexpr size_t required_stack_alignment = 4 * MB;
+constexpr size_t required_stack_alignment = 4 * MiB;
 constexpr size_t highest_reasonable_guard_size = 32 * PAGE_SIZE;
-constexpr size_t highest_reasonable_stack_size = 8 * MB; // That's the default in Ubuntu?
+constexpr size_t highest_reasonable_stack_size = 8 * MiB; // That's the default in Ubuntu?
 
 extern "C" {
 
-static int create_thread(void* (*entry)(void*), void* argument, void* thread_params)
+static void* pthread_create_helper(void* (*routine)(void*), void* argument)
 {
-    return syscall(SC_create_thread, entry, argument, thread_params);
+    void* ret_val = routine(argument);
+    pthread_exit(ret_val);
+    return nullptr;
 }
 
-static void exit_thread(void* code)
+static int create_thread(void* (*entry)(void*), void* argument, PthreadAttrImpl* thread_params)
+{
+    void** stack = (void**)((uintptr_t)thread_params->m_stack_location + thread_params->m_stack_size);
+
+    auto push_on_stack = [&](void* data) {
+        stack--;
+        *stack = data;
+        thread_params->m_stack_size -= sizeof(void*);
+    };
+
+    // We set up the stack for pthread_create_helper.
+    // Note that we need to align the stack to 16B, accounting for
+    // the fact that we also push 8 bytes.
+    while (((uintptr_t)stack - 8) % 16 != 0)
+        push_on_stack(nullptr);
+
+    push_on_stack(argument);
+    push_on_stack((void*)entry);
+    ASSERT((uintptr_t)stack % 16 == 0);
+
+    // Push a fake return address
+    push_on_stack(nullptr);
+
+    return syscall(SC_create_thread, pthread_create_helper, thread_params);
+}
+
+[[noreturn]] static void exit_thread(void* code)
 {
     syscall(SC_exit_thread, code);
     ASSERT_NOT_REACHED();
@@ -60,7 +115,7 @@ int pthread_create(pthread_t* thread, pthread_attr_t* attributes, void* (*start_
     }
 
 #ifdef PTHREAD_DEBUG
-    printf("pthread_create: Creating thread with attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
+    dbgprintf("pthread_create: Creating thread with attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
         used_attributes,
         (PTHREAD_CREATE_JOINABLE == used_attributes->m_detach_state) ? "joinable" : "detached",
         used_attributes->m_schedule_priority,
@@ -100,9 +155,10 @@ int pthread_sigmask(int how, const sigset_t* set, sigset_t* old_set)
 
 int pthread_mutex_init(pthread_mutex_t* mutex, const pthread_mutexattr_t* attributes)
 {
-    // FIXME: Implement mutex attributes
-    UNUSED_PARAM(attributes);
-    *mutex = 0;
+    mutex->lock = 0;
+    mutex->owner = 0;
+    mutex->level = 0;
+    mutex->type = attributes ? attributes->type : PTHREAD_MUTEX_NORMAL;
     return 0;
 }
 
@@ -113,28 +169,48 @@ int pthread_mutex_destroy(pthread_mutex_t*)
 
 int pthread_mutex_lock(pthread_mutex_t* mutex)
 {
-    auto* atomic = reinterpret_cast<Atomic<u32>*>(mutex);
+    auto& atomic = reinterpret_cast<Atomic<u32>&>(mutex->lock);
+    pthread_t this_thread = pthread_self();
     for (;;) {
         u32 expected = false;
-        if (atomic->compare_exchange_strong(expected, true, AK::memory_order_acq_rel))
-            return 0;
-        sched_yield();
+        if (!atomic.compare_exchange_strong(expected, true, AK::memory_order_acq_rel)) {
+            if (mutex->type == PTHREAD_MUTEX_RECURSIVE && mutex->owner == this_thread) {
+                mutex->level++;
+                return 0;
+            }
+            sched_yield();
+            continue;
+        }
+        mutex->owner = this_thread;
+        mutex->level = 0;
+        return 0;
     }
 }
 
 int pthread_mutex_trylock(pthread_mutex_t* mutex)
 {
-    auto* atomic = reinterpret_cast<Atomic<u32>*>(mutex);
+    auto& atomic = reinterpret_cast<Atomic<u32>&>(mutex->lock);
     u32 expected = false;
-    if (atomic->compare_exchange_strong(expected, true, AK::memory_order_acq_rel))
-        return 0;
-    return EBUSY;
+    if (!atomic.compare_exchange_strong(expected, true, AK::memory_order_acq_rel)) {
+        if (mutex->type == PTHREAD_MUTEX_RECURSIVE && mutex->owner == pthread_self()) {
+            mutex->level++;
+            return 0;
+        }
+        return EBUSY;
+    }
+    mutex->owner = pthread_self();
+    mutex->level = 0;
+    return 0;
 }
 
 int pthread_mutex_unlock(pthread_mutex_t* mutex)
 {
-    auto* atomic = reinterpret_cast<Atomic<u32>*>(mutex);
-    atomic->store(false, AK::memory_order_release);
+    if (mutex->type == PTHREAD_MUTEX_RECURSIVE && mutex->level > 0) {
+        mutex->level--;
+        return 0;
+    }
+    mutex->owner = 0;
+    mutex->lock = 0;
     return 0;
 }
 
@@ -149,13 +225,23 @@ int pthread_mutexattr_destroy(pthread_mutexattr_t*)
     return 0;
 }
 
+int pthread_mutexattr_settype(pthread_mutexattr_t* attr, int type)
+{
+    if (!attr)
+        return EINVAL;
+    if (type != PTHREAD_MUTEX_NORMAL && type != PTHREAD_MUTEX_RECURSIVE)
+        return EINVAL;
+    attr->type = type;
+    return 0;
+}
+
 int pthread_attr_init(pthread_attr_t* attributes)
 {
     auto* impl = new PthreadAttrImpl {};
     *attributes = impl;
 
 #ifdef PTHREAD_DEBUG
-    printf("pthread_attr_init: New thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
+    dbgprintf("pthread_attr_init: New thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
         impl,
         (PTHREAD_CREATE_JOINABLE == impl->m_detach_state) ? "joinable" : "detached",
         impl->m_schedule_priority,
@@ -198,7 +284,7 @@ int pthread_attr_setdetachstate(pthread_attr_t* attributes, int detach_state)
     attributes_impl->m_detach_state = detach_state;
 
 #ifdef PTHREAD_DEBUG
-    printf("pthread_attr_setdetachstate: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
+    dbgprintf("pthread_attr_setdetachstate: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
         attributes_impl,
         (PTHREAD_CREATE_JOINABLE == attributes_impl->m_detach_state) ? "joinable" : "detached",
         attributes_impl->m_schedule_priority,
@@ -242,7 +328,7 @@ int pthread_attr_setguardsize(pthread_attr_t* attributes, size_t guard_size)
     attributes_impl->m_reported_guard_page_size = guard_size; // POSIX, why?
 
 #ifdef PTHREAD_DEBUG
-    printf("pthread_attr_setguardsize: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
+    dbgprintf("pthread_attr_setguardsize: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
         attributes_impl,
         (PTHREAD_CREATE_JOINABLE == attributes_impl->m_detach_state) ? "joinable" : "detached",
         attributes_impl->m_schedule_priority,
@@ -271,14 +357,13 @@ int pthread_attr_setschedparam(pthread_attr_t* attributes, const struct sched_pa
     if (!attributes_impl || !p_sched_param)
         return EINVAL;
 
-    // NOTE: This must track sched_get_priority_[min,max] and ThreadPriority enum in Thread.h
-    if (p_sched_param->sched_priority < 0 || p_sched_param->sched_priority > 3)
+    if (p_sched_param->sched_priority < THREAD_PRIORITY_MIN || p_sched_param->sched_priority > THREAD_PRIORITY_MAX)
         return ENOTSUP;
 
     attributes_impl->m_schedule_priority = p_sched_param->sched_priority;
 
 #ifdef PTHREAD_DEBUG
-    printf("pthread_attr_setschedparam: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
+    dbgprintf("pthread_attr_setschedparam: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
         attributes_impl,
         (PTHREAD_CREATE_JOINABLE == attributes_impl->m_detach_state) ? "joinable" : "detached",
         attributes_impl->m_schedule_priority,
@@ -323,7 +408,7 @@ int pthread_attr_setstack(pthread_attr_t* attributes, void* p_stack, size_t stac
     attributes_impl->m_stack_location = p_stack;
 
 #ifdef PTHREAD_DEBUG
-    printf("pthread_attr_setstack: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
+    dbgprintf("pthread_attr_setstack: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
         attributes_impl,
         (PTHREAD_CREATE_JOINABLE == attributes_impl->m_detach_state) ? "joinable" : "detached",
         attributes_impl->m_schedule_priority,
@@ -359,7 +444,7 @@ int pthread_attr_setstacksize(pthread_attr_t* attributes, size_t stack_size)
     attributes_impl->m_stack_size = stack_size;
 
 #ifdef PTHREAD_DEBUG
-    printf("pthread_attr_setstacksize: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
+    dbgprintf("pthread_attr_setstacksize: Thread attributes at %p, detach state %s, priority %d, guard page size %d, stack size %d, stack location %p\n",
         attributes_impl,
         (PTHREAD_CREATE_JOINABLE == attributes_impl->m_detach_state) ? "joinable" : "detached",
         attributes_impl->m_schedule_priority,
@@ -387,42 +472,33 @@ int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param
     return 0;
 }
 
-struct WaitNode : public InlineLinkedListNode<WaitNode> {
-    volatile bool waiting { true };
-    WaitNode* m_next { nullptr };
-    WaitNode* m_prev { nullptr };
-};
-
-struct ConditionVariable {
-    InlineLinkedList<WaitNode> waiters;
-    clockid_t clock { CLOCK_MONOTONIC };
-};
-
 int pthread_cond_init(pthread_cond_t* cond, const pthread_condattr_t* attr)
 {
-    auto& condvar = *new ConditionVariable;
-    cond->storage = &condvar;
-    if (attr)
-        condvar.clock = attr->clockid;
+    cond->value = 0;
+    cond->previous = 0;
+    cond->clockid = attr ? attr->clockid : CLOCK_MONOTONIC;
     return 0;
 }
 
-int pthread_cond_destroy(pthread_cond_t* cond)
+int pthread_cond_destroy(pthread_cond_t*)
 {
-    delete static_cast<ConditionVariable*>(cond->storage);
     return 0;
+}
+
+static int cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime)
+{
+    i32 value = cond->value;
+    cond->previous = value;
+    pthread_mutex_unlock(mutex);
+    int rc = futex(&cond->value, FUTEX_WAIT, value, abstime);
+    pthread_mutex_lock(mutex);
+    return rc;
 }
 
 int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex)
 {
-    WaitNode node;
-    auto& condvar = *(ConditionVariable*)cond->storage;
-    condvar.waiters.append(&node);
-    while (node.waiting) {
-        pthread_mutex_unlock(mutex);
-        sched_yield();
-        pthread_mutex_lock(mutex);
-    }
+    int rc = cond_wait(cond, mutex, nullptr);
+    ASSERT(rc == 0);
     return 0;
 }
 
@@ -445,42 +521,24 @@ int pthread_condattr_setclock(pthread_condattr_t* attr, clockid_t clock)
 
 int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime)
 {
-    WaitNode node;
-    auto& condvar = *(ConditionVariable*)cond->storage;
-    condvar.waiters.append(&node);
-    while (node.waiting) {
-        struct timespec now;
-        if (clock_gettime(condvar.clock, &now) < 0) {
-            dbgprintf("pthread_cond_timedwait: clock_gettime() failed\n");
-            return errno;
-        }
-        if ((abstime->tv_sec < now.tv_sec) || (abstime->tv_sec == now.tv_sec && abstime->tv_nsec <= now.tv_nsec)) {
-            return ETIMEDOUT;
-        }
-        pthread_mutex_unlock(mutex);
-        sched_yield();
-        pthread_mutex_lock(mutex);
-    }
-    return 0;
+    return cond_wait(cond, mutex, abstime);
 }
 
 int pthread_cond_signal(pthread_cond_t* cond)
 {
-    auto& condvar = *(ConditionVariable*)cond->storage;
-    if (condvar.waiters.is_empty())
-        return 0;
-    auto* node = condvar.waiters.remove_head();
-    node->waiting = false;
+    u32 value = cond->previous + 1;
+    cond->value = value;
+    int rc = futex(&cond->value, FUTEX_WAKE, 1, nullptr);
+    ASSERT(rc == 0);
     return 0;
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond)
 {
-    auto& condvar = *(ConditionVariable*)cond->storage;
-    while (!condvar.waiters.is_empty()) {
-        auto* node = condvar.waiters.remove_head();
-        node->waiting = false;
-    }
+    u32 value = cond->previous + 1;
+    cond->value = value;
+    int rc = futex(&cond->value, FUTEX_WAKE, INT32_MAX, nullptr);
+    ASSERT(rc == 0);
     return 0;
 }
 
@@ -492,7 +550,7 @@ struct KeyTable {
     // FIXME: Invoke key destructors on thread exit!
     KeyDestructor destructors[64] { nullptr };
     int next { 0 };
-    pthread_mutex_t mutex { PTHREAD_MUTEX_INITIALIZER };
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 };
 
 struct SpecificTable {
@@ -537,12 +595,14 @@ int pthread_setspecific(pthread_key_t key, const void* value)
     t_specifics.values[key] = const_cast<void*>(value);
     return 0;
 }
-int pthread_setname_np(pthread_t thread, const char* buffer, int buffer_size)
+int pthread_setname_np(pthread_t thread, const char* name)
 {
-    return syscall(SC_set_thread_name, thread, buffer, buffer_size);
+    if (!name)
+        return EFAULT;
+    return syscall(SC_set_thread_name, thread, name, strlen(name));
 }
 
-int pthread_getname_np(pthread_t thread, char* buffer, int buffer_size)
+int pthread_getname_np(pthread_t thread, char* buffer, size_t buffer_size)
 {
     return syscall(SC_get_thread_name, thread, buffer, buffer_size);
 }

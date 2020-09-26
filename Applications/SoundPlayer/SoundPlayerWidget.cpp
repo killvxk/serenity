@@ -1,75 +1,101 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "SoundPlayerWidget.h"
 #include <AK/StringBuilder.h>
-#include <LibGUI/GBoxLayout.h>
-#include <LibGUI/GButton.h>
-#include <LibGUI/GLabel.h>
-#include <LibGUI/GMessageBox.h>
-#include <LibM/math.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/Button.h>
+#include <LibGUI/Label.h>
+#include <LibGUI/MessageBox.h>
+#include <math.h>
 
-SoundPlayerWidget::SoundPlayerWidget(GWindow& window, NonnullRefPtr<AClientConnection> connection)
+SoundPlayerWidget::SoundPlayerWidget(GUI::Window& window, NonnullRefPtr<Audio::ClientConnection> connection)
     : m_window(window)
     , m_connection(connection)
     , m_manager(connection)
 {
     set_fill_with_background_color(true);
-    set_layout(make<GBoxLayout>(Orientation::Vertical));
+    set_layout<GUI::VerticalBoxLayout>();
     layout()->set_margins({ 2, 2, 2, 2 });
 
-    auto status_widget = GWidget::construct(this);
-    status_widget->set_fill_with_background_color(true);
-    status_widget->set_layout(make<GBoxLayout>(Orientation::Horizontal));
+    auto& status_widget = add<GUI::Widget>();
+    status_widget.set_fill_with_background_color(true);
+    status_widget.set_layout<GUI::HorizontalBoxLayout>();
 
-    m_elapsed = GLabel::construct(status_widget);
-    m_elapsed->set_frame_shape(FrameShape::Container);
-    m_elapsed->set_frame_shadow(FrameShadow::Sunken);
+    m_elapsed = status_widget.add<GUI::Label>();
+    m_elapsed->set_frame_shape(Gfx::FrameShape::Container);
+    m_elapsed->set_frame_shadow(Gfx::FrameShadow::Sunken);
     m_elapsed->set_frame_thickness(2);
-    m_elapsed->set_size_policy(SizePolicy::Fixed, SizePolicy::Fill);
+    m_elapsed->set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
     m_elapsed->set_preferred_size(80, 0);
 
-    auto sample_widget_container = GWidget::construct(status_widget.ptr());
-    sample_widget_container->set_layout(make<GBoxLayout>(Orientation::Horizontal));
-    sample_widget_container->set_size_policy(SizePolicy::Fill, SizePolicy::Fill);
+    auto& sample_widget_container = status_widget.add<GUI::Widget>();
+    sample_widget_container.set_layout<GUI::HorizontalBoxLayout>();
+    sample_widget_container.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fill);
 
-    m_sample_widget = SampleWidget::construct(sample_widget_container);
+    m_sample_widget = sample_widget_container.add<SampleWidget>();
 
-    m_remaining = GLabel::construct(status_widget);
-    m_remaining->set_frame_shape(FrameShape::Container);
-    m_remaining->set_frame_shadow(FrameShadow::Sunken);
+    m_remaining = status_widget.add<GUI::Label>();
+    m_remaining->set_frame_shape(Gfx::FrameShape::Container);
+    m_remaining->set_frame_shadow(Gfx::FrameShadow::Sunken);
     m_remaining->set_frame_thickness(2);
-    m_remaining->set_size_policy(SizePolicy::Fixed, SizePolicy::Fill);
+    m_remaining->set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
     m_remaining->set_preferred_size(80, 0);
 
-    m_slider = Slider::construct(Orientation::Horizontal, this);
+    m_slider = add<Slider>(Orientation::Horizontal);
     m_slider->set_min(0);
     m_slider->set_enabled(false);
     m_slider->on_knob_released = [&](int value) { m_manager.seek(denormalize_rate(value)); };
 
-    auto control_widget = GWidget::construct(this);
-    control_widget->set_fill_with_background_color(true);
-    control_widget->set_layout(make<GBoxLayout>(Orientation::Horizontal));
-    control_widget->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    control_widget->set_preferred_size(0, 30);
-    control_widget->layout()->set_margins({ 10, 2, 10, 2 });
-    control_widget->layout()->set_spacing(10);
+    auto& control_widget = add<GUI::Widget>();
+    control_widget.set_fill_with_background_color(true);
+    control_widget.set_layout<GUI::HorizontalBoxLayout>();
+    control_widget.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
+    control_widget.set_preferred_size(0, 30);
+    control_widget.layout()->set_margins({ 10, 2, 10, 2 });
+    control_widget.layout()->set_spacing(10);
 
-    m_play = GButton::construct(control_widget);
+    m_play = control_widget.add<GUI::Button>();
     m_play->set_icon(*m_pause_icon);
     m_play->set_enabled(false);
-    m_play->on_click = [this](GButton& button) {
-        button.set_icon(m_manager.toggle_pause() ? *m_play_icon : *m_pause_icon);
+    m_play->on_click = [this](auto) {
+        m_play->set_icon(m_manager.toggle_pause() ? *m_play_icon : *m_pause_icon);
     };
 
-    m_stop = GButton::construct(control_widget);
+    m_stop = control_widget.add<GUI::Button>();
     m_stop->set_enabled(false);
-    m_stop->set_icon(GraphicsBitmap::load_from_file("/res/icons/16x16/stop.png"));
-    m_stop->on_click = [&](GButton&) { m_manager.stop(); };
+    m_stop->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/stop.png"));
+    m_stop->on_click = [this](auto) { m_manager.stop(); };
 
-    m_status = GLabel::construct(this);
-    m_status->set_frame_shape(FrameShape::Box);
-    m_status->set_frame_shadow(FrameShadow::Raised);
+    m_status = add<GUI::Label>();
+    m_status->set_frame_shape(Gfx::FrameShape::Box);
+    m_status->set_frame_shadow(Gfx::FrameShadow::Raised);
     m_status->set_frame_thickness(4);
-    m_status->set_text_alignment(TextAlignment::CenterLeft);
-    m_status->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
+    m_status->set_text_alignment(Gfx::TextAlignment::CenterLeft);
+    m_status->set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
     m_status->set_preferred_size(0, 18);
     m_status->set_text("No file open!");
 
@@ -94,18 +120,18 @@ void SoundPlayerWidget::hide_scope(bool hide)
 void SoundPlayerWidget::open_file(String path)
 {
     if (!path.ends_with(".wav")) {
-        GMessageBox::show("Selected file is not a \".wav\" file!", "Filetype error", GMessageBox::Type::Error);
+        GUI::MessageBox::show(window(), "Selected file is not a \".wav\" file!", "Filetype error", GUI::MessageBox::Type::Error);
         return;
     }
 
-    OwnPtr<AWavLoader> loader = make<AWavLoader>(path);
+    OwnPtr<Audio::WavLoader> loader = make<Audio::WavLoader>(path);
     if (loader->has_error()) {
-        GMessageBox::show(
+        GUI::MessageBox::show(window(),
             String::format(
                 "Failed to load WAV file: %s (%s)",
                 path.characters(),
                 loader->error_string()),
-            "Filetype error", GMessageBox::Type::Error);
+            "Filetype error", GUI::MessageBox::Type::Error);
         return;
     }
 
@@ -116,7 +142,7 @@ void SoundPlayerWidget::open_file(String path)
     m_play->set_enabled(true);
     m_stop->set_enabled(true);
 
-    m_window.set_title(String::format("SoundPlayer - \"%s\"", loader->file()->filename().characters()));
+    m_window.set_title(String::format("%s - SoundPlayer", loader->file()->filename().characters()));
     m_status->set_text(String::format(
         "Sample rate %uHz, %u %s, %u bits per sample",
         loader->sample_rate(),

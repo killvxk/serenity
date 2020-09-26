@@ -1,9 +1,35 @@
+/*
+ * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "DevicesModel.h"
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
-#include <LibCore/CDirIterator.h>
-#include <LibCore/CFile.h>
+#include <LibCore/DirIterator.h>
+#include <LibCore/File.h>
 #include <sys/stat.h>
 
 NonnullRefPtr<DevicesModel> DevicesModel::create()
@@ -19,12 +45,12 @@ DevicesModel::~DevicesModel()
 {
 }
 
-int DevicesModel::row_count(const GModelIndex&) const
+int DevicesModel::row_count(const GUI::ModelIndex&) const
 {
     return m_devices.size();
 }
 
-int DevicesModel::column_count(const GModelIndex&) const
+int DevicesModel::column_count(const GUI::ModelIndex&) const
 {
     return Column::__Count;
 }
@@ -47,62 +73,83 @@ String DevicesModel::column_name(int column) const
     }
 }
 
-GModel::ColumnMetadata DevicesModel::column_metadata(int column) const
-{
-    switch (column) {
-    case Column::Device:
-        return { 70, TextAlignment::CenterLeft };
-    case Column::Major:
-        return { 32, TextAlignment::CenterRight };
-    case Column::Minor:
-        return { 32, TextAlignment::CenterRight };
-    case Column::ClassName:
-        return { 120, TextAlignment::CenterLeft };
-    case Column::Type:
-        return { 120, TextAlignment::CenterLeft };
-    default:
-        ASSERT_NOT_REACHED();
-    }
-}
-
-GVariant DevicesModel::data(const GModelIndex& index, Role) const
+GUI::Variant DevicesModel::data(const GUI::ModelIndex& index, GUI::ModelRole role) const
 {
     ASSERT(is_valid(index));
 
-    const DeviceInfo& device = m_devices[index.row()];
-    switch (index.column()) {
-    case Column::Device:
-        return device.path;
-    case Column::Major:
-        return device.major;
-    case Column::Minor:
-        return device.minor;
-    case Column::ClassName:
-        return device.class_name;
-    case Column::Type:
-        switch (device.type) {
-        case DeviceInfo::Type::Block:
-            return "Block";
-        case DeviceInfo::Type::Character:
-            return "Character";
+    if (role == GUI::ModelRole::TextAlignment) {
+        switch (index.column()) {
+        case Column::Device:
+            return Gfx::TextAlignment::CenterLeft;
+        case Column::Major:
+            return Gfx::TextAlignment::CenterRight;
+        case Column::Minor:
+            return Gfx::TextAlignment::CenterRight;
+        case Column::ClassName:
+            return Gfx::TextAlignment::CenterLeft;
+        case Column::Type:
+            return Gfx::TextAlignment::CenterLeft;
+        }
+        return {};
+    }
+
+    if (role == GUI::ModelRole::Sort) {
+        const DeviceInfo& device = m_devices[index.row()];
+        switch (index.column()) {
+        case Column::Device:
+            return device.path;
+        case Column::Major:
+            return device.major;
+        case Column::Minor:
+            return device.minor;
+        case Column::ClassName:
+            return device.class_name;
+        case Column::Type:
+            return device.type;
         default:
             ASSERT_NOT_REACHED();
         }
-    default:
-        ASSERT_NOT_REACHED();
     }
+
+    if (role == GUI::ModelRole::Display) {
+        const DeviceInfo& device = m_devices[index.row()];
+        switch (index.column()) {
+        case Column::Device:
+            return device.path;
+        case Column::Major:
+            return device.major;
+        case Column::Minor:
+            return device.minor;
+        case Column::ClassName:
+            return device.class_name;
+        case Column::Type:
+            switch (device.type) {
+            case DeviceInfo::Type::Block:
+                return "Block";
+            case DeviceInfo::Type::Character:
+                return "Character";
+            default:
+                ASSERT_NOT_REACHED();
+            }
+        default:
+            ASSERT_NOT_REACHED();
+        }
+    }
+
+    return {};
 }
 
 void DevicesModel::update()
 {
-    auto proc_devices = CFile::construct("/proc/devices");
-    if (!proc_devices->open(CIODevice::OpenMode::ReadOnly))
+    auto proc_devices = Core::File::construct("/proc/devices");
+    if (!proc_devices->open(Core::IODevice::OpenMode::ReadOnly))
         ASSERT_NOT_REACHED();
 
-    auto json = JsonValue::from_string(proc_devices->read_all()).as_array();
+    auto json = JsonValue::from_string(proc_devices->read_all());
+    ASSERT(json.has_value());
 
     m_devices.clear();
-    json.for_each([this](auto& value) {
+    json.value().as_array().for_each([this](auto& value) {
         JsonObject device = value.as_object();
         DeviceInfo device_info;
 
@@ -122,7 +169,7 @@ void DevicesModel::update()
     });
 
     auto fill_in_paths_from_dir = [this](const String& dir) {
-        CDirIterator dir_iter { dir, CDirIterator::Flags::SkipDots };
+        Core::DirIterator dir_iter { dir, Core::DirIterator::Flags::SkipDots };
         while (dir_iter.has_next()) {
             auto name = dir_iter.next_path();
             auto path = String::format("%s/%s", dir.characters(), name.characters());
@@ -132,11 +179,11 @@ void DevicesModel::update()
             }
             if (!S_ISBLK(statbuf.st_mode) && !S_ISCHR(statbuf.st_mode))
                 continue;
-            unsigned major = ::major(statbuf.st_rdev);
-            unsigned minor = ::minor(statbuf.st_rdev);
+            unsigned _major = major(statbuf.st_rdev);
+            unsigned _minor = minor(statbuf.st_rdev);
 
-            auto it = m_devices.find([major, minor](auto& device_info) {
-                return device_info.major == major && device_info.minor == minor;
+            auto it = m_devices.find([_major, _minor](auto& device_info) {
+                return device_info.major == _major && device_info.minor == _minor;
             });
             if (it != m_devices.end()) {
                 (*it).path = move(path);

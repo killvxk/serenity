@@ -1,8 +1,34 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <AK/LexicalPath.h>
 #include <AK/String.h>
-#include <AK/FileSystemPath.h>
 #include <AK/StringBuilder.h>
-#include <LibCore/CArgsParser.h>
-#include <LibCore/CDirIterator.h>
+#include <LibCore/ArgsParser.h>
+#include <LibCore/DirIterator.h>
 #include <assert.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -15,27 +41,33 @@ bool copy_directory(String, String);
 
 int main(int argc, char** argv)
 {
-    CArgsParser args_parser("cp");
-    args_parser.add_arg("r", "copy directories recursively");
-    args_parser.add_required_single_value("source");
-    args_parser.add_required_single_value("destination");
-
-    CArgsParserResult args = args_parser.parse(argc, argv);
-    Vector<String> values = args.get_single_values();
-    if (values.size() == 0) {
-        args_parser.print_usage();
-        return 0;
+    if (pledge("stdio rpath wpath cpath fattr", nullptr) < 0) {
+        perror("pledge");
+        return 1;
     }
-    bool recursion_allowed = args.is_present("r");
-    String src_path = values[0];
-    String dst_path = values[1];
-    return copy_file_or_directory(src_path, dst_path, recursion_allowed) ? 0 : 1;
+
+    bool recursion_allowed = false;
+    Vector<const char*> sources;
+    const char* destination = nullptr;
+
+    Core::ArgsParser args_parser;
+    args_parser.add_option(recursion_allowed, "Copy directories recursively", "recursive", 'r');
+    args_parser.add_positional_argument(sources, "Source file path", "source");
+    args_parser.add_positional_argument(destination, "Destination file path", "destination");
+    args_parser.parse(argc, argv);
+
+    for (auto& source : sources) {
+        bool ok = copy_file_or_directory(source, destination, recursion_allowed);
+        if (!ok)
+            return 1;
+    }
+    return 0;
 }
 
 /**
- * Copy a file or directory to a new location. Returns true if successful, false 
+ * Copy a file or directory to a new location. Returns true if successful, false
  * otherwise. If there is an error, its description is output to stderr.
- * 
+ *
  * Directories should only be copied if recursion_allowed is set.
  */
 bool copy_file_or_directory(String src_path, String dst_path, bool recursion_allowed)
@@ -64,9 +96,9 @@ bool copy_file_or_directory(String src_path, String dst_path, bool recursion_all
 }
 
 /**
- * Copy a source file to a destination file. Returns true if successful, false 
+ * Copy a source file to a destination file. Returns true if successful, false
  * otherwise. If there is an error, its description is output to stderr.
- * 
+ *
  * To avoid repeated work, the source file's stat and file descriptor are required.
  */
 bool copy_file(String src_path, String dst_path, struct stat src_stat, int src_fd)
@@ -80,7 +112,7 @@ bool copy_file(String src_path, String dst_path, struct stat src_stat, int src_f
         StringBuilder builder;
         builder.append(dst_path);
         builder.append('/');
-        builder.append(FileSystemPath(src_path).basename());
+        builder.append(LexicalPath(src_path).basename());
         dst_path = builder.to_string();
         dst_fd = creat(dst_path.characters(), 0666);
         if (dst_fd < 0) {
@@ -142,9 +174,9 @@ bool copy_directory(String src_path, String dst_path)
         perror("cp: mkdir");
         return false;
     }
-    CDirIterator di(src_path, CDirIterator::SkipDots);
+    Core::DirIterator di(src_path, Core::DirIterator::SkipDots);
     if (di.has_error()) {
-        fprintf(stderr, "cp: CDirIterator: %s\n", di.error_string());
+        fprintf(stderr, "cp: DirIterator: %s\n", di.error_string());
         return false;
     }
     while (di.has_next()) {

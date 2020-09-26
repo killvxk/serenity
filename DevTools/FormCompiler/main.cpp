@@ -1,9 +1,35 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <AK/LogStream.h>
 #include <AK/StringBuilder.h>
-#include <LibCore/CFile.h>
+#include <LibCore/File.h>
 #include <stdio.h>
 
 int main(int argc, char** argv)
@@ -13,14 +39,16 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    auto file = CFile::construct(argv[1]);
-    if (!file->open(CIODevice::ReadOnly)) {
+    auto file = Core::File::construct(argv[1]);
+    if (!file->open(Core::IODevice::ReadOnly)) {
         fprintf(stderr, "Error: Cannot open %s: %s\n", argv[1], file->error_string());
         return 1;
     }
 
     auto file_contents = file->read_all();
-    auto json = JsonValue::from_string(file_contents);
+    auto json_result = JsonValue::from_string(file_contents);
+    ASSERT(json_result.has_value());
+    auto json = json_result.value();
 
     if (!json.is_object()) {
         fprintf(stderr, "Malformed input\n");
@@ -35,41 +63,44 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    dbg() << "#pragma once";
+    out() << "#pragma once";
 
     widgets.as_array().for_each([&](auto& value) {
         const JsonObject& widget_object = value.as_object();
         auto class_name = widget_object.get("class").to_string();
-        dbg() << "#include <LibGUI/" << class_name << ".h>";
+        StringBuilder builder;
+        auto parts = class_name.split(':');
+        builder.append(parts.last());
+        out() << "#include <LibGUI/" << builder.to_string() << ".h>";
     });
 
-    dbg() << "struct UI_" << name << " {";
-    dbg() << "    RefPtr<GWidget> main_widget;";
+    out() << "struct UI_" << name << " {";
+    out() << "    RefPtr<GUI::Widget> main_widget;";
 
     widgets.as_array().for_each([&](auto& value) {
         ASSERT(value.is_object());
         const JsonObject& widget_object = value.as_object();
         auto name = widget_object.get("name").to_string();
         auto class_name = widget_object.get("class").to_string();
-        dbg() << "    RefPtr<" << class_name << "> " << name << ";";
+        out() << "    RefPtr<" << class_name << "> " << name << ";";
     });
 
-    dbg() << "    UI_" << name << "();";
+    out() << "    UI_" << name << "();";
 
-    dbg() << "};";
+    out() << "};";
 
-    dbg() << "UI_" << name << "::UI_" << name << "()";
-    dbg() << "{";
+    out() << "UI_" << name << "::UI_" << name << "()";
+    out() << "{";
 
-    dbg() << "    main_widget = GWidget::construct(nullptr);";
-    dbg() << "    main_widget->set_fill_with_background_color(true);";
+    out() << "    main_widget = GUI::Widget::construct();";
+    out() << "    main_widget->set_fill_with_background_color(true);";
 
     widgets.as_array().for_each([&](auto& value) {
         ASSERT(value.is_object());
         const JsonObject& widget_object = value.as_object();
         auto name = widget_object.get("name").to_string();
         auto class_name = widget_object.get("class").to_string();
-        dbg() << "    " << name << " = " << class_name << "::construct(main_widget);";
+        out() << "    " << name << " = main_widget->add<" << class_name << ">();";
 
         widget_object.for_each_member([&](auto& property_name, const JsonValue& property_value) {
             if (property_name == "class")
@@ -82,12 +113,12 @@ int main(int argc, char** argv)
             else
                 value = property_value.serialized<StringBuilder>();
 
-            dbg() << "    " << name << "->set_" << property_name << "(" << value << ");";
+            out() << "    " << name << "->set_" << property_name << "(" << value << ");";
         });
 
-        dbg() << "";
+        out() << "";
     });
-    dbg() << "}";
+    out() << "}";
 
     return 0;
 }

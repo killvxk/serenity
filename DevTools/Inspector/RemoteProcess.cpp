@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "RemoteProcess.h"
 #include "RemoteObject.h"
 #include "RemoteObjectGraphModel.h"
@@ -5,11 +31,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+namespace Inspector {
+
+RemoteProcess* s_the;
+
+RemoteProcess& RemoteProcess::the()
+{
+    return *s_the;
+}
+
 RemoteProcess::RemoteProcess(pid_t pid)
     : m_pid(pid)
     , m_object_graph_model(RemoteObjectGraphModel::create(*this))
-    , m_socket(CLocalSocket::construct())
+    , m_socket(Core::LocalSocket::construct())
 {
+    s_the = this;
+    m_socket->set_blocking(true);
 }
 
 void RemoteProcess::handle_identify_response(const JsonObject& response)
@@ -30,14 +67,14 @@ void RemoteProcess::handle_get_all_objects_response(const JsonObject& response)
     auto& object_array = objects.as_array();
 
     NonnullOwnPtrVector<RemoteObject> remote_objects;
-    HashMap<String, RemoteObject*> objects_by_address;
+    HashMap<FlatPtr, RemoteObject*> objects_by_address;
 
     for (auto& value : object_array.values()) {
         ASSERT(value.is_object());
         auto& object = value.as_object();
         auto remote_object = make<RemoteObject>();
-        remote_object->address = object.get("address").to_string();
-        remote_object->parent_address = object.get("parent").to_string();
+        remote_object->address = object.get("address").to_number<FlatPtr>();
+        remote_object->parent_address = object.get("parent").to_number<FlatPtr>();
         remote_object->name = object.get("name").to_string();
         remote_object->class_name = object.get("class_name").to_string();
         remote_object->json = object;
@@ -45,7 +82,7 @@ void RemoteProcess::handle_get_all_objects_response(const JsonObject& response)
         remote_objects.append(move(remote_object));
     }
 
-    for (int i = 0; i < remote_objects.size(); ++i) {
+    for (size_t i = 0; i < remote_objects.size(); ++i) {
         auto& remote_object = remote_objects.ptr_at(i);
         auto* parent = objects_by_address.get(remote_object->parent_address).value_or(nullptr);
         if (!parent) {
@@ -68,6 +105,24 @@ void RemoteProcess::send_request(const JsonObject& request)
     i32 length = serialized.length();
     m_socket->write((const u8*)&length, sizeof(length));
     m_socket->write(serialized);
+}
+
+void RemoteProcess::set_inspected_object(FlatPtr address)
+{
+    JsonObject request;
+    request.set("type", "SetInspectedObject");
+    request.set("address", address);
+    send_request(request);
+}
+
+void RemoteProcess::set_property(FlatPtr object, const StringView& name, const JsonValue& value)
+{
+    JsonObject request;
+    request.set("type", "SetProperty");
+    request.set("address", object);
+    request.set("name", JsonValue(name));
+    request.set("value", value);
+    send_request(request);
 }
 
 void RemoteProcess::update()
@@ -95,21 +150,31 @@ void RemoteProcess::update()
             return;
         }
 
-        i32 length;
+        u32 length;
         int nread = m_socket->read((u8*)&length, sizeof(length));
         ASSERT(nread == sizeof(length));
 
-        auto data = m_socket->read(length);
-        ASSERT(data.size() == length);
+        ByteBuffer data;
+        size_t remaining_bytes = length;
 
-        dbg() << "Got packet size " << length << " and read that many bytes";
+        while (remaining_bytes) {
+            auto packet = m_socket->read(remaining_bytes);
+            if (packet.size() == 0)
+                break;
+            data.append(packet.data(), packet.size());
+            remaining_bytes -= packet.size();
+        }
+
+        ASSERT(data.size() == length);
+        dbg() << "Got data size " << length << " and read that many bytes";
 
         auto json_value = JsonValue::from_string(data);
-        ASSERT(json_value.is_object());
+        ASSERT(json_value.has_value());
+        ASSERT(json_value.value().is_object());
 
-        dbg() << "Got JSON response " << json_value.to_string();
+        dbg() << "Got JSON response " << json_value.value().to_string();
 
-        auto& response = json_value.as_object();
+        auto& response = json_value.value().as_object();
 
         auto response_type = response.get("type").as_string_or({});
         if (response_type.is_null())
@@ -126,9 +191,11 @@ void RemoteProcess::update()
         }
     };
 
-    auto success = m_socket->connect(CSocketAddress::local(String::format("/tmp/rpc.%d", m_pid)));
+    auto success = m_socket->connect(Core::SocketAddress::local(String::format("/tmp/rpc/%d", m_pid)));
     if (!success) {
         fprintf(stderr, "Couldn't connect to PID %d\n", m_pid);
         exit(1);
     }
+}
+
 }

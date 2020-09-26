@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/HashMap.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
@@ -5,18 +31,20 @@
 #include <AK/QuickSort.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
-#include <LibCore/CProcessStatisticsReader.h>
+#include <LibCore/ProcessStatisticsReader.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 struct ThreadData {
     int tid;
     pid_t pid;
-    unsigned pgid;
-    unsigned pgp;
-    unsigned sid;
+    pid_t pgid;
+    pid_t pgp;
+    pid_t sid;
     uid_t uid;
     gid_t gid;
     pid_t ppid;
@@ -37,7 +65,7 @@ struct ThreadData {
     unsigned cpu_percent { 0 };
     unsigned cpu_percent_decimal { 0 };
 
-    String priority;
+    u32 priority;
     String username;
     String state;
 };
@@ -67,7 +95,7 @@ static Snapshot get_snapshot()
 {
     Snapshot snapshot;
 
-    auto all_processes = CProcessStatisticsReader::get_all();
+    auto all_processes = Core::ProcessStatisticsReader::get_all();
 
     for (auto& it : all_processes) {
         auto& stats = it.value;
@@ -105,17 +133,55 @@ static Snapshot get_snapshot()
     return snapshot;
 }
 
+static bool g_window_size_changed = true;
+static struct winsize g_window_size;
+
 int main(int, char**)
 {
+    if (pledge("stdio rpath tty sigaction ", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
+    if (unveil("/proc/all", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/etc/passwd", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    unveil(nullptr, nullptr);
+
+    signal(SIGWINCH, [](int) {
+        g_window_size_changed = true;
+    });
+
+    if (pledge("stdio rpath tty", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
     Vector<ThreadData*> threads;
     auto prev = get_snapshot();
     usleep(10000);
     for (;;) {
+        if (g_window_size_changed) {
+            int rc = ioctl(STDOUT_FILENO, TIOCGWINSZ, &g_window_size);
+            if (rc < 0) {
+                perror("ioctl(TIOCGWINSZ)");
+                return 1;
+            }
+            g_window_size_changed = false;
+        }
+
         auto current = get_snapshot();
         auto sum_diff = current.sum_times_scheduled - prev.sum_times_scheduled;
 
         printf("\033[3J\033[H\033[2J");
-        printf("\033[47;30m%6s %3s %3s  %-8s  %-10s  %6s  %6s  %4s  %s\033[K\033[0m\n",
+        printf("\033[47;30m%6s %3s %3s  %-9s  %-10s  %6s  %6s  %4s  %s\033[K\033[0m\n",
             "PID",
             "TID",
             "PRI",
@@ -141,22 +207,29 @@ int main(int, char**)
             threads.append(&it.value);
         }
 
-        quick_sort(threads.begin(), threads.end(), [](auto* p1, auto* p2) {
+        quick_sort(threads, [](auto* p1, auto* p2) {
             return p2->times_scheduled_since_prev < p1->times_scheduled_since_prev;
         });
 
+        int row = 0;
         for (auto* thread : threads) {
-            printf("%6d %3d %c    %-8s  %-10s  %6zu  %6zu  %2u.%1u  %s\n",
+            int nprinted = printf("%6d %3d %2u   %-9s  %-10s  %6zu  %6zu  %2u.%1u  ",
                 thread->pid,
                 thread->tid,
-                thread->priority[0],
+                thread->priority,
                 thread->username.characters(),
                 thread->state.characters(),
                 thread->amount_virtual / 1024,
                 thread->amount_resident / 1024,
                 thread->cpu_percent,
-                thread->cpu_percent_decimal,
-                thread->name.characters());
+                thread->cpu_percent_decimal);
+
+            int remaining = g_window_size.ws_col - nprinted;
+            fwrite(thread->name.characters(), 1, max(0, min(remaining, (int)thread->name.length())), stdout);
+            putchar('\n');
+
+            if (++row >= (g_window_size.ws_row - 2))
+                break;
         }
         threads.clear_with_capacity();
         prev = move(current);

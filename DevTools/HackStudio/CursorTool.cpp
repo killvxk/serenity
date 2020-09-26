@@ -1,22 +1,57 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "CursorTool.h"
 #include "FormEditorWidget.h"
 #include "FormWidget.h"
 #include "WidgetTreeModel.h"
 #include <AK/LogStream.h>
+#include <LibGfx/Palette.h>
 
-void CursorTool::on_mousedown(GMouseEvent& event)
+//#define DEBUG_CURSOR_TOOL
+
+namespace HackStudio {
+
+void CursorTool::on_mousedown(GUI::MouseEvent& event)
 {
+#ifdef DEBUG_CURSOR_TOOL
     dbg() << "CursorTool::on_mousedown";
+#endif
     auto& form_widget = m_editor.form_widget();
-    auto result = form_widget.hit_test(event.position(), GWidget::ShouldRespectGreediness::No);
+    auto result = form_widget.hit_test(event.position(), GUI::Widget::ShouldRespectGreediness::No);
 
-    if (event.button() == GMouseButton::Left) {
+    if (event.button() == GUI::MouseButton::Left) {
         if (result.widget && result.widget != &form_widget) {
             if (event.modifiers() & Mod_Ctrl) {
                 m_editor.selection().toggle(*result.widget);
             } else if (!event.modifiers()) {
                 if (!m_editor.selection().contains(*result.widget)) {
+#ifdef DEBUG_CURSOR_TOOL
                     dbg() << "Selection didn't contain " << *result.widget << ", making it the only selected one";
+#endif
                     m_editor.selection().set(*result.widget);
                 }
 
@@ -39,12 +74,14 @@ void CursorTool::on_mousedown(GMouseEvent& event)
     }
 }
 
-void CursorTool::on_mouseup(GMouseEvent& event)
+void CursorTool::on_mouseup(GUI::MouseEvent& event)
 {
+#ifdef DEBUG_CURSOR_TOOL
     dbg() << "CursorTool::on_mouseup";
-    if (event.button() == GMouseButton::Left) {
+#endif
+    if (event.button() == GUI::MouseButton::Left) {
         auto& form_widget = m_editor.form_widget();
-        auto result = form_widget.hit_test(event.position(), GWidget::ShouldRespectGreediness::No);
+        auto result = form_widget.hit_test(event.position(), GUI::Widget::ShouldRespectGreediness::No);
         if (!m_dragging && !(event.modifiers() & Mod_Ctrl)) {
             if (result.widget && result.widget != &form_widget) {
                 m_editor.selection().set(*result.widget);
@@ -58,9 +95,11 @@ void CursorTool::on_mouseup(GMouseEvent& event)
     }
 }
 
-void CursorTool::on_mousemove(GMouseEvent& event)
+void CursorTool::on_mousemove(GUI::MouseEvent& event)
 {
+#ifdef DEBUG_CURSOR_TOOL
     dbg() << "CursorTool::on_mousemove";
+#endif
     auto& form_widget = m_editor.form_widget();
 
     if (m_rubber_banding) {
@@ -68,8 +107,8 @@ void CursorTool::on_mousemove(GMouseEvent& event)
         return;
     }
 
-    if (!m_dragging && event.buttons() & GMouseButton::Left && event.position() != m_drag_origin) {
-        auto result = form_widget.hit_test(event.position(), GWidget::ShouldRespectGreediness::No);
+    if (!m_dragging && event.buttons() & GUI::MouseButton::Left && event.position() != m_drag_origin) {
+        auto result = form_widget.hit_test(event.position(), GUI::Widget::ShouldRespectGreediness::No);
         if (result.widget && result.widget != &form_widget) {
             if (!m_editor.selection().contains(*result.widget)) {
                 m_editor.selection().set(*result.widget);
@@ -95,9 +134,11 @@ void CursorTool::on_mousemove(GMouseEvent& event)
     }
 }
 
-void CursorTool::on_keydown(GKeyEvent& event)
+void CursorTool::on_keydown(GUI::KeyEvent& event)
 {
+#ifdef DEBUG_CURSOR_TOOL
     dbg() << "CursorTool::on_keydown";
+#endif
 
     auto move_selected_widgets_by = [this](int x, int y) {
         m_editor.selection().for_each([&](auto& widget) {
@@ -120,11 +161,13 @@ void CursorTool::on_keydown(GKeyEvent& event)
         case Key_Right:
             move_selected_widgets_by(m_editor.form_widget().grid_size(), 0);
             break;
+        default:
+            break;
         }
     }
 }
 
-void CursorTool::set_rubber_band_position(const Point& position)
+void CursorTool::set_rubber_band_position(const Gfx::IntPoint& position)
 {
     if (m_rubber_band_position == position)
         return;
@@ -142,18 +185,20 @@ void CursorTool::set_rubber_band_position(const Point& position)
     m_editor.form_widget().update();
 }
 
-Rect CursorTool::rubber_band_rect() const
+Gfx::IntRect CursorTool::rubber_band_rect() const
 {
     if (!m_rubber_banding)
         return {};
-    return Rect::from_two_points(m_rubber_band_origin, m_rubber_band_position);
+    return Gfx::IntRect::from_two_points(m_rubber_band_origin, m_rubber_band_position);
 }
 
-void CursorTool::on_second_paint(GPainter& painter, GPaintEvent&)
+void CursorTool::on_second_paint(GUI::Painter& painter, GUI::PaintEvent&)
 {
     if (!m_rubber_banding)
         return;
     auto rect = rubber_band_rect();
-    painter.fill_rect(rect, Color(244, 202, 158, 60));
-    painter.draw_rect(rect, Color(110, 34, 9));
+    painter.fill_rect(rect, m_editor.palette().rubber_band_fill());
+    painter.draw_rect(rect, m_editor.palette().rubber_band_border());
+}
+
 }

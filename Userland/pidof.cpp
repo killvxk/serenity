@@ -1,18 +1,45 @@
-#include <AK/String.h>
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/HashMap.h>
+#include <AK/String.h>
 #include <AK/Vector.h>
-#include <LibCore/CArgsParser.h>
-#include <LibCore/CProcessStatisticsReader.h>
+#include <LibCore/ArgsParser.h>
+#include <LibCore/ProcessStatisticsReader.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 static int pid_of(const String& process_name, bool single_shot, bool omit_pid, pid_t pid)
 {
     bool displayed_at_least_one = false;
 
-    auto processes = CProcessStatisticsReader().get_all();
+    auto processes = Core::ProcessStatisticsReader().get_all();
 
     for (auto& it : processes) {
         if (it.value.name == process_name) {
@@ -34,33 +61,30 @@ static int pid_of(const String& process_name, bool single_shot, bool omit_pid, p
 
 int main(int argc, char** argv)
 {
-    CArgsParser args_parser("pidof");
+    bool single_shot = false;
+    const char* omit_pid_value = nullptr;
+    const char* process_name = nullptr;
 
-    args_parser.add_arg("s", "Single shot - this instructs the program to only return one pid");
-    args_parser.add_arg("o", "pid", "Tells pidof to omit processes with that pid. The special pid %PPID can be used to name the parent process of the pidof program.");
+    Core::ArgsParser args_parser;
+    args_parser.add_option(single_shot, "Only return one pid", nullptr, 's');
+    args_parser.add_option(omit_pid_value, "Omit the given PID, or the parent process if the special value %PPID is passed", nullptr, 'o', "pid");
+    args_parser.add_positional_argument(process_name, "Process name to search for", "process-name");
 
-    CArgsParserResult args = args_parser.parse(argc, argv);
+    args_parser.parse(argc, argv);
 
-    bool s_arg = args.is_present("s");
-    bool o_arg = args.is_present("o");
-    pid_t pid = 0;
-
-    if (o_arg) {
-        bool ok = false;
-        String pid_str = args.get("o");
-
-        if (pid_str == "%PPID")
-            pid = getppid();
-        else
-            pid = pid_str.to_uint(ok);
+    pid_t pid_to_omit = 0;
+    if (omit_pid_value) {
+        if (!strcmp(omit_pid_value, "%PPID")) {
+            pid_to_omit = getppid();
+        } else {
+            auto number = StringView(omit_pid_value).to_uint();
+            if (!number.has_value()) {
+                fprintf(stderr, "Invalid value for -o\n");
+                args_parser.print_usage(stderr, argv[0]);
+                return 1;
+            }
+            pid_to_omit = number.value();
+        }
     }
-
-    // We should have one single value : the process name
-    Vector<String> values = args.get_single_values();
-    if (values.size() == 0) {
-        args_parser.print_usage();
-        return 0;
-    }
-
-    return pid_of(values[0], s_arg, o_arg, pid);
+    return pid_of(process_name, single_shot, omit_pid_value != nullptr, pid_to_omit);
 }

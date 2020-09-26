@@ -1,10 +1,38 @@
-#include "Process.h"
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <Kernel/Process.h>
 #include <Kernel/TTY/TTY.h>
 #include <LibC/errno_numbers.h>
 #include <LibC/signal_numbers.h>
 #include <LibC/sys/ioctl_numbers.h>
 
 //#define TTY_DEBUG
+
+namespace Kernel {
 
 TTY::TTY(unsigned major, unsigned minor)
     : CharacterDevice(major, minor)
@@ -20,55 +48,66 @@ void TTY::set_default_termios()
 {
     memset(&m_termios, 0, sizeof(m_termios));
     m_termios.c_lflag |= ISIG | ECHO | ICANON;
-    static const char default_cc[32] = "\003\034\010\025\004\0\1\0\021\023\032\0\022\017\027\026\0";
+    static const char default_cc[32] = "\003\034\010\025\004\0\1\0\021\023\032\0\022\017\027\026\0\024";
     memcpy(m_termios.c_cc, default_cc, sizeof(default_cc));
 }
 
-ssize_t TTY::read(FileDescription&, u8* buffer, ssize_t size)
+KResultOr<size_t> TTY::read(FileDescription&, size_t, UserOrKernelBuffer& buffer, size_t size)
 {
-    if (m_input_buffer.size() < size)
+    if (Process::current()->pgid() != pgid()) {
+        // FIXME: Should we propigate this error path somehow?
+        (void)Process::current()->send_signal(SIGTTIN, nullptr);
+        return KResult(-EINTR);
+    }
+
+    if (m_input_buffer.size() < static_cast<size_t>(size))
         size = m_input_buffer.size();
 
+    ssize_t nwritten;
     if (in_canonical_mode()) {
-        int i = 0;
-        for (; i < size; i++) {
-            u8 ch = m_input_buffer.dequeue();
-            if (ch == '\0') {
-                //Here we handle a ^D line, so we don't add the
-                //character to the output.
-                m_available_lines--;
-                break;
-            } else if (ch == '\n' || is_eol(ch)) {
-                buffer[i] = ch;
-                i++;
-                m_available_lines--;
-                break;
+        nwritten = buffer.write_buffered<512>(size, [&](u8* data, size_t data_size) {
+            size_t i = 0;
+            for (; i < data_size; i++) {
+                u8 ch = m_input_buffer.dequeue();
+                if (ch == '\0') {
+                    //Here we handle a ^D line, so we don't add the
+                    //character to the output.
+                    m_available_lines--;
+                    break;
+                } else if (ch == '\n' || is_eol(ch)) {
+                    data[i] = ch;
+                    i++;
+                    m_available_lines--;
+                    break;
+                }
+                data[i] = ch;
             }
-            buffer[i] = ch;
-        }
-        return i;
+            return (ssize_t)i;
+        });
+    } else {
+        nwritten = buffer.write_buffered<512>(size, [&](u8* data, size_t data_size) {
+            for (size_t i = 0; i < data_size; i++)
+                data[i] = m_input_buffer.dequeue();
+            return (ssize_t)data_size;
+        });
     }
-
-    for (int i = 0; i < size; i++)
-        buffer[i] = m_input_buffer.dequeue();
-
-    return size;
+    if (nwritten < 0)
+        return KResult(nwritten);
+    return (size_t)nwritten;
 }
 
-ssize_t TTY::write(FileDescription&, const u8* buffer, ssize_t size)
+KResultOr<size_t> TTY::write(FileDescription&, size_t, const UserOrKernelBuffer& buffer, size_t size)
 {
-#ifdef TTY_DEBUG
-    dbgprintf("TTY::write {%u} ", size);
-    for (size_t i = 0; i < size; ++i) {
-        dbgprintf("%b ", buffer[i]);
+    if (Process::current()->pgid() != pgid()) {
+        (void)Process::current()->send_signal(SIGTTOU, nullptr);
+        return KResult(-EINTR);
     }
-    dbgprintf("\n");
-#endif
+
     on_tty_write(buffer, size);
     return size;
 }
 
-bool TTY::can_read(const FileDescription&) const
+bool TTY::can_read(const FileDescription&, size_t) const
 {
     if (in_canonical_mode()) {
         return m_available_lines > 0;
@@ -76,7 +115,7 @@ bool TTY::can_read(const FileDescription&) const
     return !m_input_buffer.is_empty();
 }
 
-bool TTY::can_write(const FileDescription&) const
+bool TTY::can_write(const FileDescription&, size_t) const
 {
     return true;
 }
@@ -109,6 +148,11 @@ bool TTY::is_werase(u8 ch) const
 void TTY::emit(u8 ch)
 {
     if (should_generate_signals()) {
+        if (ch == m_termios.c_cc[VINFO]) {
+            dbg() << tty_name() << ": VINFO pressed!";
+            generate_signal(SIGINFO);
+            return;
+        }
         if (ch == m_termios.c_cc[VINTR]) {
             dbg() << tty_name() << ": VINTR pressed!";
             generate_signal(SIGINT);
@@ -122,6 +166,9 @@ void TTY::emit(u8 ch)
         if (ch == m_termios.c_cc[VSUSP]) {
             dbg() << tty_name() << ": VSUSP pressed!";
             generate_signal(SIGTSTP);
+            if (m_original_process_parent)
+                (void)m_original_process_parent->send_signal(SIGCHLD, nullptr);
+            // TODO: Else send it to the session leader maybe?
             return;
         }
     }
@@ -168,7 +215,9 @@ void TTY::do_backspace()
 {
     if (can_do_backspace()) {
         m_input_buffer.dequeue_end();
-        echo(m_termios.c_cc[VERASE]);
+        echo(8);
+        echo(' ');
+        echo(8);
     }
 }
 
@@ -189,7 +238,7 @@ void TTY::erase_word()
         if (ch != ' ')
             first_char = true;
         m_input_buffer.dequeue_end();
-        echo(m_termios.c_cc[VERASE]);
+        erase_character();
     }
 }
 
@@ -197,8 +246,15 @@ void TTY::kill_line()
 {
     while (can_do_backspace()) {
         m_input_buffer.dequeue_end();
-        echo(m_termios.c_cc[VERASE]);
+        erase_character();
     }
+}
+
+void TTY::erase_character()
+{
+    echo(m_termios.c_cc[VERASE]);
+    echo(' ');
+    echo(m_termios.c_cc[VERASE]);
 }
 
 void TTY::generate_signal(int signal)
@@ -207,11 +263,12 @@ void TTY::generate_signal(int signal)
         return;
     if (should_flush_on_signal())
         flush_input();
-    dbg() << tty_name() << ": Send signal " << signal << " to everyone in pgrp " << pgid();
+    dbg() << tty_name() << ": Send signal " << signal << " to everyone in pgrp " << pgid().value();
     InterruptDisabler disabler; // FIXME: Iterate over a set of process handles instead?
     Process::for_each_in_pgrp(pgid(), [&](auto& process) {
         dbg() << tty_name() << ": Send signal " << signal << " to " << process;
-        process.send_signal(signal, nullptr);
+        // FIXME: Should this error be propagated somehow?
+        (void)process.send_signal(signal, nullptr);
         return IterationDecision::Continue;
     });
 }
@@ -225,6 +282,7 @@ void TTY::flush_input()
 void TTY::set_termios(const termios& t)
 {
     m_termios = t;
+#ifdef TTY_DEBUG
     dbg() << tty_name() << " set_termios: "
           << "ECHO=" << should_echo_input()
           << ", ISIG=" << should_generate_signals()
@@ -236,68 +294,107 @@ void TTY::set_termios(const termios& t)
           << ", ICRNL=" << ((m_termios.c_iflag & ICRNL) != 0)
           << ", INLCR=" << ((m_termios.c_iflag & INLCR) != 0)
           << ", IGNCR=" << ((m_termios.c_iflag & IGNCR) != 0);
+#endif
 }
 
-int TTY::ioctl(FileDescription&, unsigned request, unsigned arg)
+int TTY::ioctl(FileDescription&, unsigned request, FlatPtr arg)
 {
-    auto& process = current->process();
-    pid_t pgid;
-    termios* tp;
-    winsize* ws;
+    REQUIRE_PROMISE(tty);
+    auto& current_process = *Process::current();
+    termios* user_termios;
+    winsize* user_winsize;
 
 #if 0
     // FIXME: When should we block things?
     //        How do we make this work together with MasterPTY forwarding to us?
-    if (process.tty() && process.tty() != this) {
+    if (current_process.tty() && current_process.tty() != this) {
         return -ENOTTY;
     }
 #endif
     switch (request) {
     case TIOCGPGRP:
-        return m_pgid;
-    case TIOCSPGRP:
-        // FIXME: Validate pgid fully.
-        pgid = static_cast<pid_t>(arg);
-        if (pgid < 0)
+        return this->pgid().value();
+    case TIOCSPGRP: {
+        ProcessGroupID pgid = static_cast<pid_t>(arg);
+        if (pgid <= 0)
             return -EINVAL;
-        m_pgid = pgid;
+        InterruptDisabler disabler;
+        auto process_group = ProcessGroup::from_pgid(pgid);
+        // Disallow setting a nonexistent PGID.
+        if (!process_group)
+            return -EINVAL;
+
+        auto process = Process::from_pid(ProcessID(pgid.value()));
+        SessionID new_sid = process ? process->sid() : Process::get_sid_from_pgid(pgid);
+        if (!new_sid || new_sid != current_process.sid())
+            return -EPERM;
+        if (process && pgid != process->pgid())
+            return -EPERM;
+        m_pg = process_group->make_weak_ptr();
+
+        if (process) {
+            if (auto parent = Process::from_pid(process->ppid())) {
+                m_original_process_parent = parent->make_weak_ptr();
+                return 0;
+            }
+        }
+
+        m_original_process_parent = nullptr;
         return 0;
-    case TCGETS:
-        tp = reinterpret_cast<termios*>(arg);
-        if (!process.validate_write(tp, sizeof(termios)))
+    }
+    case TCGETS: {
+        user_termios = reinterpret_cast<termios*>(arg);
+        if (!copy_to_user(user_termios, &m_termios))
             return -EFAULT;
-        *tp = m_termios;
         return 0;
+    }
     case TCSETS:
     case TCSETSF:
-    case TCSETSW:
-        tp = reinterpret_cast<termios*>(arg);
-        if (!process.validate_read(tp, sizeof(termios)))
+    case TCSETSW: {
+        user_termios = reinterpret_cast<termios*>(arg);
+        termios termios;
+        if (!copy_from_user(&termios, user_termios))
             return -EFAULT;
-        set_termios(*tp);
+        set_termios(termios);
+        if (request == TCSETSF)
+            flush_input();
+        return 0;
+    }
+    case TCFLSH:
+        // Serenity's TTY implementation does not use an output buffer, so ignore TCOFLUSH.
+        if (arg == TCIFLUSH || arg == TCIOFLUSH) {
+            flush_input();
+        } else if (arg != TCOFLUSH) {
+            return -EINVAL;
+        }
         return 0;
     case TIOCGWINSZ:
-        ws = reinterpret_cast<winsize*>(arg);
-        if (!process.validate_write(ws, sizeof(winsize)))
+        user_winsize = reinterpret_cast<winsize*>(arg);
+        winsize ws;
+        ws.ws_row = m_rows;
+        ws.ws_col = m_columns;
+        ws.ws_xpixel = 0;
+        ws.ws_ypixel = 0;
+        if (!copy_to_user(user_winsize, &ws))
             return -EFAULT;
-        ws->ws_row = m_rows;
-        ws->ws_col = m_columns;
         return 0;
-    case TIOCSWINSZ:
-        ws = reinterpret_cast<winsize*>(arg);
-        if (!process.validate_read(ws, sizeof(winsize)))
+    case TIOCSWINSZ: {
+        user_winsize = reinterpret_cast<winsize*>(arg);
+        winsize ws;
+        if (!copy_from_user(&ws, user_winsize))
             return -EFAULT;
-        if (ws->ws_col == m_columns && ws->ws_row == m_rows)
+        if (ws.ws_col == m_columns && ws.ws_row == m_rows)
             return 0;
-        m_rows = ws->ws_row;
-        m_columns = ws->ws_col;
+        m_rows = ws.ws_row;
+        m_columns = ws.ws_col;
         generate_signal(SIGWINCH);
         return 0;
+    }
     case TIOCSCTTY:
-        process.set_tty(this);
+        current_process.set_tty(this);
         return 0;
     case TIOCNOTTY:
-        process.set_tty(nullptr);
+        current_process.set_tty(nullptr);
         return 0;
     }
     ASSERT_NOT_REACHED();
@@ -313,4 +410,5 @@ void TTY::set_size(unsigned short columns, unsigned short rows)
 void TTY::hang_up()
 {
     generate_signal(SIGHUP);
+}
 }

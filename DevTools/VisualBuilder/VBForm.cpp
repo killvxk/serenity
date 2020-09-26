@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "VBForm.h"
 #include "VBProperty.h"
 #include "VBWidget.h"
@@ -5,13 +31,12 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/StringBuilder.h>
-#include <LibCore/CFile.h>
-#include <LibDraw/PNGLoader.h>
-#include <LibGUI/GAction.h>
-#include <LibGUI/GBoxLayout.h>
-#include <LibGUI/GMenu.h>
-#include <LibGUI/GMessageBox.h>
-#include <LibGUI/GPainter.h>
+#include <LibCore/File.h>
+#include <LibGUI/Action.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/Menu.h>
+#include <LibGUI/MessageBox.h>
+#include <LibGUI/Painter.h>
 
 static VBForm* s_current;
 VBForm* VBForm::current()
@@ -19,44 +44,42 @@ VBForm* VBForm::current()
     return s_current;
 }
 
-VBForm::VBForm(const String& name, GWidget* parent)
-    : GWidget(parent)
-    , m_name(name)
+VBForm::VBForm(const String& name)
+    : m_name(name)
 {
     s_current = this;
     set_fill_with_background_color(true);
-    set_background_color(Color::WarmGray);
     set_greedy_for_hits(true);
 
-    m_context_menu = GMenu::construct();
-    m_context_menu->add_action(GCommonActions::make_move_to_front_action([this](auto&) {
+    m_context_menu = GUI::Menu::construct();
+    m_context_menu->add_action(GUI::CommonActions::make_move_to_front_action([this](auto&) {
         if (auto* widget = single_selected_widget())
             widget->gwidget()->move_to_front();
     }));
-    m_context_menu->add_action(GCommonActions::make_move_to_back_action([this](auto&) {
+    m_context_menu->add_action(GUI::CommonActions::make_move_to_back_action([this](auto&) {
         if (auto* widget = single_selected_widget())
             widget->gwidget()->move_to_back();
     }));
     m_context_menu->add_separator();
-    m_context_menu->add_action(GAction::create("Lay out horizontally", load_png("/res/icons/16x16/layout-horizontally.png"), [this](auto&) {
+    m_context_menu->add_action(GUI::Action::create("Lay out horizontally", Gfx::Bitmap::load_from_file("/res/icons/16x16/layout-horizontally.png"), [this](auto&) {
         if (auto* widget = single_selected_widget()) {
             dbg() << "Giving " << *widget->gwidget() << " a horizontal box layout";
-            widget->gwidget()->set_layout(make<GBoxLayout>(Orientation::Horizontal));
+            widget->gwidget()->set_layout<GUI::HorizontalBoxLayout>();
         }
     }));
-    m_context_menu->add_action(GAction::create("Lay out vertically", load_png("/res/icons/16x16/layout-vertically.png"), [this](auto&) {
+    m_context_menu->add_action(GUI::Action::create("Lay out vertically", Gfx::Bitmap::load_from_file("/res/icons/16x16/layout-vertically.png"), [this](auto&) {
         if (auto* widget = single_selected_widget()) {
             dbg() << "Giving " << *widget->gwidget() << " a vertical box layout";
-            widget->gwidget()->set_layout(make<GBoxLayout>(Orientation::Vertical));
+            widget->gwidget()->set_layout<GUI::VerticalBoxLayout>();
         }
     }));
     m_context_menu->add_separator();
-    m_context_menu->add_action(GCommonActions::make_delete_action([this](auto&) {
+    m_context_menu->add_action(GUI::CommonActions::make_delete_action([this](auto&) {
         delete_selected_widgets();
     }));
 }
 
-void VBForm::context_menu_event(GContextMenuEvent& event)
+void VBForm::context_menu_event(GUI::ContextMenuEvent& event)
 {
     m_context_menu->popup(event.screen_position());
 }
@@ -65,7 +88,7 @@ void VBForm::insert_widget(VBWidgetType type)
 {
     auto* insertion_parent = single_selected_widget();
     auto widget = VBWidget::create(type, *this, insertion_parent);
-    Point insertion_position = m_next_insertion_position;
+    Gfx::IntPoint insertion_position = m_next_insertion_position;
     if (insertion_parent)
         insertion_position.move_by(insertion_parent->gwidget()->window_relative_rect().location());
     widget->set_rect({ insertion_position, { m_grid_size * 10 + 1, m_grid_size * 5 + 1 } });
@@ -77,9 +100,9 @@ VBForm::~VBForm()
 {
 }
 
-void VBForm::paint_event(GPaintEvent& event)
+void VBForm::paint_event(GUI::PaintEvent& event)
 {
-    GPainter painter(*this);
+    GUI::Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
     for (int y = 0; y < height(); y += m_grid_size) {
@@ -89,9 +112,9 @@ void VBForm::paint_event(GPaintEvent& event)
     }
 }
 
-void VBForm::second_paint_event(GPaintEvent& event)
+void VBForm::second_paint_event(GUI::PaintEvent& event)
 {
-    GPainter painter(*this);
+    GUI::Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
     for (auto& widget : m_widgets) {
@@ -113,9 +136,9 @@ bool VBForm::is_selected(const VBWidget& widget) const
     return m_selected_widgets.contains(const_cast<VBWidget*>(&widget));
 }
 
-VBWidget* VBForm::widget_at(const Point& position)
+VBWidget* VBForm::widget_at(const Gfx::IntPoint& position)
 {
-    auto result = hit_test(position, GWidget::ShouldRespectGreediness::No);
+    auto result = hit_test(position, GUI::Widget::ShouldRespectGreediness::No);
     if (!result.widget)
         return nullptr;
     auto* gwidget = result.widget;
@@ -127,14 +150,14 @@ VBWidget* VBForm::widget_at(const Point& position)
     return nullptr;
 }
 
-void VBForm::grabber_mousedown_event(GMouseEvent& event, Direction grabber)
+void VBForm::grabber_mousedown_event(GUI::MouseEvent& event, Direction grabber)
 {
     m_transform_event_origin = event.position();
     for_each_selected_widget([](auto& widget) { widget.capture_transform_origin_rect(); });
     m_resize_direction = grabber;
 }
 
-void VBForm::keydown_event(GKeyEvent& event)
+void VBForm::keydown_event(GUI::KeyEvent& event)
 {
     if (event.key() == KeyCode::Key_Delete) {
         delete_selected_widgets();
@@ -148,7 +171,7 @@ void VBForm::keydown_event(GKeyEvent& event)
             update();
             return;
         }
-        int selected_widget_index = 0;
+        size_t selected_widget_index = 0;
         for (; selected_widget_index < m_widgets.size(); ++selected_widget_index) {
             if (&m_widgets[selected_widget_index] == *m_selected_widgets.begin())
                 break;
@@ -194,6 +217,8 @@ void VBForm::keydown_event(GKeyEvent& event)
                 widget.gwidget()->move_by(m_grid_size, 0);
             });
             break;
+        default:
+            break;
         }
         return;
     }
@@ -227,7 +252,7 @@ void VBForm::remove_from_selection(VBWidget& widget)
     update();
 }
 
-void VBForm::mousedown_event(GMouseEvent& event)
+void VBForm::mousedown_event(GUI::MouseEvent& event)
 {
     if (m_resize_direction == Direction::None) {
         bool hit_grabber = false;
@@ -248,7 +273,7 @@ void VBForm::mousedown_event(GMouseEvent& event)
         set_single_selected_widget(nullptr);
         return;
     }
-    if (event.button() == GMouseButton::Left || event.button() == GMouseButton::Right) {
+    if (event.button() == GUI::MouseButton::Left || event.button() == GUI::MouseButton::Right) {
         m_transform_event_origin = event.position();
         if (event.modifiers() == Mod_Ctrl)
             remove_from_selection(*widget);
@@ -261,9 +286,9 @@ void VBForm::mousedown_event(GMouseEvent& event)
     }
 }
 
-void VBForm::mousemove_event(GMouseEvent& event)
+void VBForm::mousemove_event(GUI::MouseEvent& event)
 {
-    if (event.buttons() & GMouseButton::Left) {
+    if (event.buttons() & GUI::MouseButton::Left) {
         if (m_resize_direction == Direction::None) {
             update();
             auto delta = event.position() - m_transform_event_origin;
@@ -329,7 +354,7 @@ void VBForm::mousemove_event(GMouseEvent& event)
             if (widget.is_in_layout())
                 return;
             auto new_rect = widget.transform_origin_rect();
-            Size minimum_size { 5, 5 };
+            Gfx::IntSize minimum_size { 5, 5 };
             new_rect.set_x(new_rect.x() + change_x);
             new_rect.set_y(new_rect.y() + change_y);
             new_rect.set_width(max(minimum_size.width(), new_rect.width() + change_w));
@@ -356,22 +381,23 @@ void VBForm::mousemove_event(GMouseEvent& event)
 
 void VBForm::load_from_file(const String& path)
 {
-    auto file = CFile::construct(path);
-    if (!file->open(CIODevice::ReadOnly)) {
-        GMessageBox::show(String::format("Could not open '%s' for reading", path.characters()), "Error", GMessageBox::Type::Error, GMessageBox::InputType::OK, window());
+    auto file = Core::File::construct(path);
+    if (!file->open(Core::IODevice::ReadOnly)) {
+        GUI::MessageBox::show(window(), String::format("Could not open '%s' for reading", path.characters()), "Error", GUI::MessageBox::Type::Error);
         return;
     }
 
     auto file_contents = file->read_all();
     auto form_json = JsonValue::from_string(file_contents);
+    ASSERT(form_json.has_value());
 
-    if (!form_json.is_object()) {
-        GMessageBox::show(String::format("Could not parse '%s'", path.characters()), "Error", GMessageBox::Type::Error, GMessageBox::InputType::OK, window());
+    if (!form_json.value().is_object()) {
+        GUI::MessageBox::show(window(), String::format("Could not parse '%s'", path.characters()), "Error", GUI::MessageBox::Type::Error);
         return;
     }
 
-    m_name = form_json.as_object().get("name").to_string();
-    auto widgets = form_json.as_object().get("widgets").as_array();
+    m_name = form_json.value().as_object().get("name").to_string();
+    auto widgets = form_json.value().as_object().get("widgets").as_array();
 
     widgets.for_each([&](const JsonValue& widget_value) {
         auto& widget_object = widget_value.as_object();
@@ -392,9 +418,9 @@ void VBForm::load_from_file(const String& path)
 
 void VBForm::write_to_file(const String& path)
 {
-    auto file = CFile::construct(path);
-    if (!file->open(CIODevice::WriteOnly)) {
-        GMessageBox::show(String::format("Could not open '%s' for writing", path.characters()), "Error", GMessageBox::Type::Error, GMessageBox::InputType::OK, window());
+    auto file = Core::File::construct(path);
+    if (!file->open(Core::IODevice::WriteOnly)) {
+        GUI::MessageBox::show(window(), String::format("Could not open '%s' for writing", path.characters()), "Error", GUI::MessageBox::Type::Error);
         return;
     }
 
@@ -406,8 +432,10 @@ void VBForm::write_to_file(const String& path)
         widget.for_each_property([&](auto& property) {
             if (property.value().is_bool())
                 widget_object.set(property.name(), property.value().to_bool());
-            else if (property.value().is_int())
-                widget_object.set(property.name(), property.value().to_int());
+            else if (property.value().is_i32())
+                widget_object.set(property.name(), property.value().to_i32());
+            else if (property.value().is_i64())
+                widget_object.set(property.name(), property.value().to_i64());
             else
                 widget_object.set(property.name(), property.value().to_string());
         });
@@ -432,9 +460,9 @@ void VBForm::dump()
     }
 }
 
-void VBForm::mouseup_event(GMouseEvent& event)
+void VBForm::mouseup_event(GUI::MouseEvent& event)
 {
-    if (event.button() == GMouseButton::Left) {
+    if (event.button() == GUI::MouseButton::Left) {
         m_transform_event_origin = {};
         m_resize_direction = Direction::None;
     }
@@ -469,22 +497,22 @@ void VBForm::set_cursor_type_from_grabber(Direction grabber)
     switch (grabber) {
     case Direction::Up:
     case Direction::Down:
-        window()->set_override_cursor(GStandardCursor::ResizeVertical);
+        window()->set_cursor(Gfx::StandardCursor::ResizeVertical);
         break;
     case Direction::Left:
     case Direction::Right:
-        window()->set_override_cursor(GStandardCursor::ResizeHorizontal);
+        window()->set_cursor(Gfx::StandardCursor::ResizeHorizontal);
         break;
     case Direction::UpLeft:
     case Direction::DownRight:
-        window()->set_override_cursor(GStandardCursor::ResizeDiagonalTLBR);
+        window()->set_cursor(Gfx::StandardCursor::ResizeDiagonalTLBR);
         break;
     case Direction::UpRight:
     case Direction::DownLeft:
-        window()->set_override_cursor(GStandardCursor::ResizeDiagonalBLTR);
+        window()->set_cursor(Gfx::StandardCursor::ResizeDiagonalBLTR);
         break;
     case Direction::None:
-        window()->set_override_cursor(GStandardCursor::None);
+        window()->set_cursor(Gfx::StandardCursor::None);
         break;
     }
 

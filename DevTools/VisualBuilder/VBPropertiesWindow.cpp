@@ -1,20 +1,46 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "VBPropertiesWindow.h"
 #include "VBWidgetPropertyModel.h"
-#include <LibGUI/GBoxLayout.h>
-#include <LibGUI/GComboBox.h>
-#include <LibGUI/GModelEditingDelegate.h>
-#include <LibGUI/GTableView.h>
-#include <LibGUI/GTextBox.h>
-#include <LibGUI/GWidget.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/ComboBox.h>
+#include <LibGUI/ModelEditingDelegate.h>
+#include <LibGUI/TableView.h>
+#include <LibGUI/TextBox.h>
+#include <LibGUI/Widget.h>
 
-class BoolValuesModel final : public GModel {
+class BoolValuesModel final : public GUI::Model {
 public:
-    virtual int row_count(const GModelIndex&) const override { return 2; }
-    virtual int column_count(const GModelIndex&) const override { return 1; }
-    virtual void update() override {}
-    virtual GVariant data(const GModelIndex& index, Role role) const override
+    virtual int row_count(const GUI::ModelIndex&) const override { return 2; }
+    virtual int column_count(const GUI::ModelIndex&) const override { return 1; }
+    virtual void update() override { }
+    virtual GUI::Variant data(const GUI::ModelIndex& index, GUI::ModelRole role) const override
     {
-        if (role != Role::Display)
+        if (role != GUI::ModelRole::Display)
             return {};
         switch (index.row()) {
         case 0:
@@ -26,25 +52,25 @@ public:
     }
 };
 
-class BoolModelEditingDelegate : public GModelEditingDelegate {
+class BoolModelEditingDelegate : public GUI::ModelEditingDelegate {
 public:
-    BoolModelEditingDelegate() {}
-    virtual ~BoolModelEditingDelegate() override {}
+    BoolModelEditingDelegate() { }
+    virtual ~BoolModelEditingDelegate() override { }
 
-    virtual RefPtr<GWidget> create_widget() override
+    virtual RefPtr<GUI::Widget> create_widget() override
     {
-        auto combo = GComboBox::construct(nullptr);
+        auto combo = GUI::ComboBox::construct();
         combo->set_only_allow_values_from_model(true);
         combo->set_model(adopt(*new BoolValuesModel));
         combo->on_return_pressed = [this] { commit(); };
         combo->on_change = [this](auto&, auto&) { commit(); };
         return combo;
     }
-    virtual GVariant value() const override { return static_cast<const GComboBox*>(widget())->text() == "true"; }
-    virtual void set_value(const GVariant& value) override { static_cast<GComboBox*>(widget())->set_text(value.to_string()); }
+    virtual GUI::Variant value() const override { return static_cast<const GUI::ComboBox*>(widget())->text() == "true"; }
+    virtual void set_value(const GUI::Variant& value) override { static_cast<GUI::ComboBox*>(widget())->set_text(value.to_string()); }
     virtual void will_begin_editing() override
     {
-        auto& combo = *static_cast<GComboBox*>(widget());
+        auto& combo = *static_cast<GUI::ComboBox*>(widget());
         combo.select_all();
         combo.open();
     }
@@ -54,27 +80,27 @@ VBPropertiesWindow::VBPropertiesWindow()
 {
     set_title("Properties");
     set_rect(780, 200, 240, 280);
+    set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-visual-builder.png"));
 
-    auto widget = GWidget::construct();
-    widget->set_fill_with_background_color(true);
-    widget->set_layout(make<GBoxLayout>(Orientation::Vertical));
-    widget->layout()->set_margins({ 2, 2, 2, 2 });
-    set_main_widget(widget);
+    auto& widget = set_main_widget<GUI::Widget>();
+    widget.set_fill_with_background_color(true);
+    widget.set_layout<GUI::VerticalBoxLayout>();
+    widget.layout()->set_margins({ 2, 2, 2, 2 });
 
-    m_table_view = GTableView::construct(widget);
-    m_table_view->set_headers_visible(false);
+    m_table_view = widget.add<GUI::TableView>();
+    m_table_view->set_column_headers_visible(false);
     m_table_view->set_editable(true);
 
-    m_table_view->aid_create_editing_delegate = [this](auto& index) -> OwnPtr<GModelEditingDelegate> {
+    m_table_view->aid_create_editing_delegate = [this](auto& index) -> OwnPtr<GUI::ModelEditingDelegate> {
         if (!m_table_view->model())
             return nullptr;
         auto type_index = m_table_view->model()->index(index.row(), VBWidgetPropertyModel::Column::Type);
-        auto type = m_table_view->model()->data(type_index, GModel::Role::Custom).to_int();
-        switch ((GVariant::Type)type) {
-        case GVariant::Type::Bool:
+        auto type = type_index.data(GUI::ModelRole::Custom).to_i32();
+        switch ((GUI::Variant::Type)type) {
+        case GUI::Variant::Type::Bool:
             return make<BoolModelEditingDelegate>();
         default:
-            return make<GStringModelEditingDelegate>();
+            return make<GUI::StringModelEditingDelegate>();
         }
     };
 }

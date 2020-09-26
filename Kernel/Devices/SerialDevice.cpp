@@ -1,5 +1,33 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <Kernel/Devices/SerialDevice.h>
 #include <Kernel/IO.h>
+
+namespace Kernel {
 
 SerialDevice::SerialDevice(int base_addr, unsigned minor)
     : CharacterDevice(4, minor)
@@ -12,12 +40,12 @@ SerialDevice::~SerialDevice()
 {
 }
 
-bool SerialDevice::can_read(const FileDescription&) const
+bool SerialDevice::can_read(const FileDescription&, size_t) const
 {
     return (get_line_status() & DataReady) != 0;
 }
 
-ssize_t SerialDevice::read(FileDescription&, u8* buffer, ssize_t size)
+KResultOr<size_t> SerialDevice::read(FileDescription&, size_t, UserOrKernelBuffer& buffer, size_t size)
 {
     if (!size)
         return 0;
@@ -25,17 +53,23 @@ ssize_t SerialDevice::read(FileDescription&, u8* buffer, ssize_t size)
     if (!(get_line_status() & DataReady))
         return 0;
 
-    buffer[0] = IO::in8(m_base_addr);
+    ssize_t nwritten = buffer.write_buffered<128>(size, [&](u8* data, size_t data_size) {
+        for (size_t i = 0; i < data_size; i++)
+            data[i] = IO::in8(m_base_addr);
+        return (ssize_t)data_size;
+    });
+    if (nwritten < 0)
+        return KResult(nwritten);
 
-    return 1;
+    return size;
 }
 
-bool SerialDevice::can_write(const FileDescription&) const
+bool SerialDevice::can_write(const FileDescription&, size_t) const
 {
     return (get_line_status() & EmptyTransmitterHoldingRegister) != 0;
 }
 
-ssize_t SerialDevice::write(FileDescription&, const u8* buffer, ssize_t size)
+KResultOr<size_t> SerialDevice::write(FileDescription&, size_t, const UserOrKernelBuffer& buffer, size_t size)
 {
     if (!size)
         return 0;
@@ -43,9 +77,14 @@ ssize_t SerialDevice::write(FileDescription&, const u8* buffer, ssize_t size)
     if (!(get_line_status() & EmptyTransmitterHoldingRegister))
         return 0;
 
-    IO::out8(m_base_addr, buffer[0]);
-
-    return 1;
+    ssize_t nread = buffer.read_buffered<128>(size, [&](const u8* data, size_t data_size) {
+        for (size_t i = 0; i < data_size; i++)
+            IO::out8(m_base_addr, data[i]);
+        return (ssize_t)data_size;
+    });
+    if (nread < 0)
+        return KResult(nread);
+    return (size_t)nread;
 }
 
 void SerialDevice::initialize()
@@ -69,8 +108,8 @@ void SerialDevice::set_baud(Baud baud)
     m_baud = baud;
 
     IO::out8(m_base_addr + 3, IO::in8(m_base_addr + 3) | 0x80); // turn on DLAB
-    IO::out8(m_base_addr + 0, ((char)(baud)) >> 2); // lower half of divisor
-    IO::out8(m_base_addr + 1, ((char)(baud)) & 0xff); // upper half of divisor
+    IO::out8(m_base_addr + 0, ((char)(baud)) >> 2);             // lower half of divisor
+    IO::out8(m_base_addr + 1, ((char)(baud)) & 0xff);           // upper half of divisor
     IO::out8(m_base_addr + 3, IO::in8(m_base_addr + 3) & 0x7f); // turn off DLAB
 }
 
@@ -107,4 +146,6 @@ void SerialDevice::set_modem_control(char modem_control)
 char SerialDevice::get_line_status() const
 {
     return IO::in8(m_base_addr + 5);
+}
+
 }

@@ -1,12 +1,44 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <AK/HashMap.h>
+#include <AK/NumberFormat.h>
 #include <AK/QuickSort.h>
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
+#include <AK/Utf8View.h>
 #include <AK/Vector.h>
-#include <LibCore/CDirIterator.h>
+#include <LibCore/ArgsParser.h>
+#include <LibCore/DateTime.h>
+#include <LibCore/DirIterator.h>
+#include <LibCore/File.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <getopt.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -19,7 +51,7 @@
 static int do_file_system_object_long(const char* path);
 static int do_file_system_object_short(const char* path);
 
-static bool flag_colorize = true;
+static bool flag_colorize = false;
 static bool flag_long = false;
 static bool flag_show_dotfiles = false;
 static bool flag_show_inode = false;
@@ -27,13 +59,22 @@ static bool flag_print_numeric = false;
 static bool flag_human_readable = false;
 static bool flag_sort_by_timestamp = false;
 static bool flag_reverse_sort = false;
+static bool flag_disable_hyperlinks = false;
 
 static size_t terminal_rows = 0;
 static size_t terminal_columns = 0;
 static bool output_is_terminal = false;
 
+static HashMap<uid_t, String> users;
+static HashMap<gid_t, String> groups;
+
 int main(int argc, char** argv)
 {
+    if (pledge("stdio rpath tty", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
     struct winsize ws;
     int rc = ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
     if (rc == 0) {
@@ -41,39 +82,41 @@ int main(int argc, char** argv)
         terminal_columns = ws.ws_col;
         output_is_terminal = true;
     }
+    if (!isatty(STDOUT_FILENO)) {
+        flag_disable_hyperlinks = true;
+    } else {
+        flag_colorize = true;
+    }
 
-    static const char* valid_option_characters = "ltraiGnh";
-    int opt;
-    while ((opt = getopt(argc, argv, valid_option_characters)) != -1) {
-        switch (opt) {
-        case 'a':
-            flag_show_dotfiles = true;
-            break;
-        case 'l':
-            flag_long = true;
-            break;
-        case 't':
-            flag_sort_by_timestamp = true;
-            break;
-        case 'r':
-            flag_reverse_sort = true;
-            break;
-        case 'G':
-            flag_colorize = false;
-            break;
-        case 'i':
-            flag_show_inode = true;
-            break;
-        case 'n':
-            flag_print_numeric = true;
-            break;
-        case 'h':
-            flag_human_readable = true;
-            break;
-        default:
-            fprintf(stderr, "usage: ls [-%s] [paths...]\n", valid_option_characters);
-            return 1;
-        }
+    if (pledge("stdio rpath", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
+    Vector<const char*> paths;
+
+    Core::ArgsParser args_parser;
+    args_parser.add_option(flag_show_dotfiles, "Show dotfiles", "all", 'a');
+    args_parser.add_option(flag_long, "Display long info", "long", 'l');
+    args_parser.add_option(flag_sort_by_timestamp, "Sort files by timestamp", nullptr, 't');
+    args_parser.add_option(flag_reverse_sort, "Reverse sort order", "reverse", 'r');
+    args_parser.add_option(flag_colorize, "Use pretty colors", nullptr, 'G');
+    args_parser.add_option(flag_show_inode, "Show inode ids", "inode", 'i');
+    args_parser.add_option(flag_print_numeric, "In long format, display numeric UID/GID", "numeric-uid-gid", 'n');
+    args_parser.add_option(flag_human_readable, "Print human-readable sizes", "human-readable", 'h');
+    args_parser.add_option(flag_disable_hyperlinks, "Disable hyperlinks", "no-hyperlinks", 'K');
+    args_parser.add_positional_argument(paths, "Directory to list", "path", Core::ArgsParser::Required::No);
+    args_parser.parse(argc, argv);
+
+    if (flag_long) {
+        setpwent();
+        for (auto* pwd = getpwent(); pwd; pwd = getpwent())
+            users.set(pwd->pw_uid, pwd->pw_name);
+        endpwent();
+        setgrent();
+        for (auto* grp = getgrent(); grp; grp = getgrent())
+            groups.set(grp->gr_gid, grp->gr_name);
+        endgrent();
     }
 
     auto do_file_system_object = [&](const char* path) {
@@ -83,29 +126,75 @@ int main(int argc, char** argv)
     };
 
     int status = 0;
-    if (optind >= argc) {
+    if (paths.is_empty()) {
         status = do_file_system_object(".");
-    } else if (optind + 1 >= argc) {
-        status = do_file_system_object(argv[optind]);
+    } else if (paths.size() == 1) {
+        status = do_file_system_object(paths[0]);
     } else {
-        for (; optind < argc; ++optind) {
-            printf("%s:\n", argv[optind]);
-            status = do_file_system_object(argv[optind]);
+        for (auto& path : paths) {
+            status = do_file_system_object(path);
         }
     }
     return status;
 }
 
-int print_name(const struct stat& st, const String& name, const char* path_for_link_resolution = nullptr)
+static int print_escaped(const char* name)
 {
-    int nprinted = name.length();
+    int printed = 0;
+
+    Utf8View utf8_name(name);
+    if (utf8_name.validate()) {
+        printf("%s", name);
+        return utf8_name.length_in_code_points();
+    }
+
+    for (int i = 0; name[i] != '\0'; i++) {
+        if (isprint(name[i])) {
+            putchar(name[i]);
+            printed++;
+        } else {
+            printed += printf("\\%03d", name[i]);
+        }
+    }
+
+    return printed;
+}
+
+static String& hostname()
+{
+    static String s_hostname;
+    if (s_hostname.is_null()) {
+        char buffer[HOST_NAME_MAX];
+        if (gethostname(buffer, sizeof(buffer)) == 0)
+            s_hostname = buffer;
+        else
+            s_hostname = "localhost";
+    }
+    return s_hostname;
+}
+
+static size_t print_name(const struct stat& st, const String& name, const char* path_for_link_resolution, const char* path_for_hyperlink)
+{
+    if (!flag_disable_hyperlinks) {
+        if (auto* full_path = realpath(path_for_hyperlink, nullptr)) {
+            printf("\033]8;;file://%s%s\033\\", hostname().characters(), full_path);
+            free(full_path);
+        }
+    }
+
+    size_t nprinted = 0;
+
     if (!flag_colorize || !output_is_terminal) {
-        printf("%s", name.characters());
+        nprinted = printf("%s", name.characters());
     } else {
         const char* begin_color = "";
         const char* end_color = "\033[0m";
 
-        if (S_ISLNK(st.st_mode))
+        if (st.st_mode & S_ISVTX)
+            begin_color = "\033[42;30;1m";
+        else if (st.st_mode & S_ISUID)
+            begin_color = "\033[41;1m";
+        else if (S_ISLNK(st.st_mode))
             begin_color = "\033[36;1m";
         else if (S_ISDIR(st.st_mode))
             begin_color = "\033[34;1m";
@@ -115,16 +204,18 @@ int print_name(const struct stat& st, const String& name, const char* path_for_l
             begin_color = "\033[35;1m";
         else if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode))
             begin_color = "\033[33;1m";
-        printf("%s%s%s", begin_color, name.characters(), end_color);
+        printf("%s", begin_color);
+        nprinted = print_escaped(name.characters());
+        printf("%s", end_color);
     }
     if (S_ISLNK(st.st_mode)) {
         if (path_for_link_resolution) {
-            char linkbuf[PATH_MAX];
-            ssize_t nread = readlink(path_for_link_resolution, linkbuf, sizeof(linkbuf));
-            if (nread < 0)
-                perror("readlink failed");
-            else
-                nprinted += printf(" -> %s", linkbuf);
+            auto link_destination = Core::File::read_link(path_for_link_resolution);
+            if (link_destination.is_null()) {
+                perror("readlink");
+            } else {
+                nprinted += printf(" -> ") + print_escaped(link_destination.characters());
+            }
         } else {
             nprinted += printf("@");
         }
@@ -133,29 +224,15 @@ int print_name(const struct stat& st, const String& name, const char* path_for_l
     } else if (st.st_mode & 0111) {
         nprinted += printf("*");
     }
+
+    if (!flag_disable_hyperlinks) {
+        printf("\033]8;;\033\\");
+    }
+
     return nprinted;
 }
 
-// FIXME: Remove this hackery once printf() supports floats.
-// FIXME: Also, we should probably round the sizes in ls -lh output.
-static String number_string_with_one_decimal(float number, const char* suffix)
-{
-    float decimals = number - (int)number;
-    return String::format("%d.%d%s", (int)number, (int)(decimals * 10), suffix);
-}
-
-static String human_readable_size(size_t size)
-{
-    if (size < 1 * KB)
-        return String::number(size);
-    if (size < 1 * MB)
-        return number_string_with_one_decimal((float)size / (float)KB, "K");
-    if (size < 1 * GB)
-        return number_string_with_one_decimal((float)size / (float)MB, "M");
-    return number_string_with_one_decimal((float)size / (float)GB, "G");
-}
-
-bool print_filesystem_object(const String& path, const String& name, const struct stat& st)
+static bool print_filesystem_object(const String& path, const String& name, const struct stat& st)
 {
     if (flag_show_inode)
         printf("%08u ", st.st_ino);
@@ -192,48 +269,40 @@ bool print_filesystem_object(const String& path, const String& name, const struc
     else
         printf("%c", st.st_mode & S_IXOTH ? 'x' : '-');
 
-    passwd* pwd = getpwuid(st.st_uid);
-    group* grp = getgrgid(st.st_gid);
-    if (!flag_print_numeric && pwd) {
-        printf(" %5s", pwd->pw_name);
+    auto username = users.get(st.st_uid);
+    auto groupname = groups.get(st.st_gid);
+    if (!flag_print_numeric && username.has_value()) {
+        printf(" %7s", username.value().characters());
     } else {
-        printf(" %5u", st.st_uid);
+        printf(" %7u", st.st_uid);
     }
-    if (!flag_print_numeric && grp) {
-        printf(" %5s", grp->gr_name);
+    if (!flag_print_numeric && groupname.has_value()) {
+        printf(" %7s", groupname.value().characters());
     } else {
-        printf(" %5u", st.st_gid);
+        printf(" %7u", st.st_gid);
     }
 
     if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode)) {
         printf("  %4u,%4u ", major(st.st_rdev), minor(st.st_rdev));
     } else {
         if (flag_human_readable) {
-            ASSERT(st.st_size > 0);
             printf(" %10s ", human_readable_size((size_t)st.st_size).characters());
         } else {
-            printf(" %10u ", st.st_size);
+            printf(" %10zd ", st.st_size);
         }
     }
 
-    auto* tm = localtime(&st.st_mtime);
-    printf("  %4u-%02u-%02u %02u:%02u:%02u  ",
-        tm->tm_year + 1900,
-        tm->tm_mon + 1,
-        tm->tm_mday,
-        tm->tm_hour,
-        tm->tm_min,
-        tm->tm_sec);
+    printf("  %s  ", Core::DateTime::from_timestamp(st.st_mtime).to_string().characters());
 
-    print_name(st, name, path.characters());
+    print_name(st, name, path.characters(), path.characters());
 
     printf("\n");
     return true;
 }
 
-int do_file_system_object_long(const char* path)
+static int do_file_system_object_long(const char* path)
 {
-    CDirIterator di(path, !flag_show_dotfiles ? CDirIterator::SkipDots : CDirIterator::Flags::NoFlags);
+    Core::DirIterator di(path, !flag_show_dotfiles ? Core::DirIterator::SkipDots : Core::DirIterator::Flags::NoFlags);
     if (di.has_error()) {
         if (di.error() == ENOTDIR) {
             struct stat stat;
@@ -246,7 +315,7 @@ int do_file_system_object_long(const char* path)
                 return 0;
             return 2;
         }
-        fprintf(stderr, "CDirIterator: %s\n", di.error_string());
+        fprintf(stderr, "%s: %s\n", path, di.error_string());
         return 1;
     }
 
@@ -277,7 +346,7 @@ int do_file_system_object_long(const char* path)
         files.append(move(metadata));
     }
 
-    quick_sort(files.begin(), files.end(), [](auto& a, auto& b) {
+    quick_sort(files, [](auto& a, auto& b) {
         if (flag_sort_by_timestamp) {
             if (flag_reverse_sort)
                 return a.stat.st_mtime > b.stat.st_mtime;
@@ -296,7 +365,7 @@ int do_file_system_object_long(const char* path)
     return 0;
 }
 
-bool print_filesystem_object_short(const char* path, const char* name, int* nprinted)
+static bool print_filesystem_object_short(const char* path, const char* name, size_t* nprinted)
 {
     struct stat st;
     int rc = lstat(path, &st);
@@ -305,23 +374,23 @@ bool print_filesystem_object_short(const char* path, const char* name, int* npri
         return false;
     }
 
-    *nprinted = print_name(st, name);
+    *nprinted = print_name(st, name, nullptr, path);
     return true;
 }
 
 int do_file_system_object_short(const char* path)
 {
-    CDirIterator di(path, !flag_show_dotfiles ? CDirIterator::SkipDots : CDirIterator::Flags::NoFlags);
+    Core::DirIterator di(path, !flag_show_dotfiles ? Core::DirIterator::SkipDots : Core::DirIterator::Flags::NoFlags);
     if (di.has_error()) {
         if (di.error() == ENOTDIR) {
-            int nprinted;
+            size_t nprinted = 0;
             bool status = print_filesystem_object_short(path, path, &nprinted);
             printf("\n");
             if (status)
                 return 0;
             return 2;
         }
-        fprintf(stderr, "CDirIterator: %s\n", di.error_string());
+        fprintf(stderr, "%s: %s\n", path, di.error_string());
         return 1;
     }
 
@@ -333,11 +402,11 @@ int do_file_system_object_short(const char* path)
         if (names.last().length() > longest_name)
             longest_name = name.length();
     }
-    quick_sort(names.begin(), names.end(), [](auto& a, auto& b) { return a < b; });
+    quick_sort(names);
 
     size_t printed_on_row = 0;
-    int nprinted;
-    for (int i = 0; i < names.size(); ++i) {
+    size_t nprinted = 0;
+    for (size_t i = 0; i < names.size(); ++i) {
         auto& name = names[i];
         StringBuilder builder;
         builder.append(path);
@@ -350,12 +419,12 @@ int do_file_system_object_short(const char* path)
             offset = terminal_columns % longest_name / (terminal_columns / longest_name);
 
         // The offset must be at least 2 because:
-        // - With each file an aditional char is printed e.g. '@','*'.
+        // - With each file an additional char is printed e.g. '@','*'.
         // - Each filename must be separated by a space.
-        size_t column_width = longest_name + (offset > 0 ? offset : 2);
+        size_t column_width = longest_name + max(offset, 2);
         printed_on_row += column_width;
 
-        for (int j = nprinted; i != (names.size() - 1) && j < (int)column_width; ++j)
+        for (size_t j = nprinted; i != (names.size() - 1) && j < column_width; ++j)
             printf(" ");
         if ((printed_on_row + column_width) >= terminal_columns) {
             printf("\n");

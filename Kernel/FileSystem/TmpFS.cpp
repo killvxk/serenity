@@ -1,6 +1,34 @@
+/*
+ * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <Kernel/FileSystem/TmpFS.h>
 #include <Kernel/Process.h>
 #include <Kernel/Thread.h>
+
+namespace Kernel {
 
 NonnullRefPtr<TmpFS> TmpFS::create()
 {
@@ -21,10 +49,11 @@ bool TmpFS::initialize()
     return true;
 }
 
-InodeIdentifier TmpFS::root_inode() const
+NonnullRefPtr<Inode> TmpFS::root_inode() const
 {
     ASSERT(!m_root_inode.is_null());
-    return m_root_inode->identifier();
+
+    return *m_root_inode;
 }
 
 void TmpFS::register_inode(TmpFSInode& inode)
@@ -53,50 +82,13 @@ unsigned TmpFS::next_inode_index()
 
 RefPtr<Inode> TmpFS::get_inode(InodeIdentifier identifier) const
 {
-    LOCKER(m_lock);
+    LOCKER(m_lock, Lock::Mode::Shared);
     ASSERT(identifier.fsid() == fsid());
 
     auto it = m_inodes.find(identifier.index());
     if (it == m_inodes.end())
         return nullptr;
     return it->value;
-}
-
-RefPtr<Inode> TmpFS::create_inode(InodeIdentifier parent_id, const String& name, mode_t mode, off_t size, dev_t dev, int& error)
-{
-    LOCKER(m_lock);
-    ASSERT(parent_id.fsid() == fsid());
-
-    ASSERT(size == 0);
-    ASSERT(dev == 0);
-
-    struct timeval now;
-    kgettimeofday(now);
-
-    InodeMetadata metadata;
-    metadata.mode = mode;
-    metadata.uid = current->process().euid();
-    metadata.gid = current->process().egid();
-    metadata.atime = now.tv_sec;
-    metadata.ctime = now.tv_sec;
-    metadata.mtime = now.tv_sec;
-
-    auto inode = TmpFSInode::create(*this, metadata, parent_id);
-
-    auto it = m_inodes.find(parent_id.index());
-    ASSERT(it != m_inodes.end());
-    auto parent_inode = it->value;
-    error = parent_inode->add_child(inode->identifier(), name, mode);
-
-    return inode;
-}
-
-RefPtr<Inode> TmpFS::create_directory(InodeIdentifier parent_id, const String& name, mode_t mode, int& error)
-{
-    // Ensure it's a directory.
-    mode &= ~0170000;
-    mode |= 0040000;
-    return create_inode(parent_id, name, mode, 0, 0, error);
 }
 
 TmpFSInode::TmpFSInode(TmpFS& fs, InodeMetadata metadata, InodeIdentifier parent)
@@ -121,49 +113,64 @@ NonnullRefPtr<TmpFSInode> TmpFSInode::create(TmpFS& fs, InodeMetadata metadata, 
 NonnullRefPtr<TmpFSInode> TmpFSInode::create_root(TmpFS& fs)
 {
     InodeMetadata metadata;
-    metadata.mode = 0040777;
+    metadata.mode = S_IFDIR | S_ISVTX | 0777;
     return create(fs, metadata, { fs.fsid(), 1 });
 }
 
 InodeMetadata TmpFSInode::metadata() const
 {
-    LOCKER(m_lock);
+    LOCKER(m_lock, Lock::Mode::Shared);
 
     return m_metadata;
 }
 
-bool TmpFSInode::traverse_as_directory(Function<bool(const FS::DirectoryEntry&)> callback) const
+KResult TmpFSInode::traverse_as_directory(Function<bool(const FS::DirectoryEntryView&)> callback) const
 {
-    LOCKER(m_lock);
+    LOCKER(m_lock, Lock::Mode::Shared);
 
     if (!is_directory())
-        return false;
+        return KResult(-ENOTDIR);
 
-    for (auto& it : m_children)
-        callback(it.value.entry);
-    return true;
+    callback({ ".", identifier(), 0 });
+    callback({ "..", m_parent, 0 });
+
+    for (auto& it : m_children) {
+        auto& entry = it.value;
+        callback({ entry.name, entry.inode->identifier(), 0 });
+    }
+    return KSuccess;
 }
 
-ssize_t TmpFSInode::read_bytes(off_t offset, ssize_t size, u8* buffer, FileDescription*) const
+ssize_t TmpFSInode::read_bytes(off_t offset, ssize_t size, UserOrKernelBuffer& buffer, FileDescription*) const
 {
-    LOCKER(m_lock);
+    LOCKER(m_lock, Lock::Mode::Shared);
     ASSERT(!is_directory());
     ASSERT(size >= 0);
+    ASSERT(offset >= 0);
 
     if (!m_content.has_value())
+        return 0;
+
+    if (offset >= m_metadata.size)
         return 0;
 
     if (static_cast<off_t>(size) > m_metadata.size - offset)
         size = m_metadata.size - offset;
 
-    memcpy(buffer, m_content.value().data() + offset, size);
+    if (!buffer.write(m_content.value().data() + offset, size))
+        return -EFAULT;
     return size;
 }
 
-ssize_t TmpFSInode::write_bytes(off_t offset, ssize_t size, const u8* buffer, FileDescription*)
+ssize_t TmpFSInode::write_bytes(off_t offset, ssize_t size, const UserOrKernelBuffer& buffer, FileDescription*)
 {
     LOCKER(m_lock);
     ASSERT(!is_directory());
+    ASSERT(offset >= 0);
+
+    auto result = prepare_to_write_data();
+    if (result.is_error())
+        return result;
 
     off_t old_size = m_metadata.size;
     off_t new_size = m_metadata.size;
@@ -174,7 +181,15 @@ ssize_t TmpFSInode::write_bytes(off_t offset, ssize_t size, const u8* buffer, Fi
         if (m_content.has_value() && m_content.value().capacity() >= (size_t)new_size) {
             m_content.value().set_size(new_size);
         } else {
-            auto tmp = KBuffer::create_with_size(new_size);
+            // Grow the content buffer 2x the new sizeto accomodate repeating write() calls.
+            // Note that we're not actually committing physical memory to the buffer
+            // until it's needed. We only grow VM here.
+
+            // FIXME: Fix this so that no memcpy() is necessary, and we can just grow the
+            //        KBuffer and it will add physical pages as needed while keeping the
+            //        existing ones.
+            auto tmp = KBuffer::create_with_size(new_size * 2);
+            tmp.set_size(new_size);
             if (m_content.has_value())
                 memcpy(tmp.data(), m_content.value().data(), old_size);
             m_content = move(tmp);
@@ -185,34 +200,40 @@ ssize_t TmpFSInode::write_bytes(off_t offset, ssize_t size, const u8* buffer, Fi
         inode_size_changed(old_size, new_size);
     }
 
-    memcpy(m_content.value().data() + offset, buffer, size);
+    if (!buffer.read(m_content.value().data() + offset, size)) // TODO: partial reads?
+        return -EFAULT;
     inode_contents_changed(offset, size, buffer);
 
     return size;
 }
 
-InodeIdentifier TmpFSInode::lookup(StringView name)
+RefPtr<Inode> TmpFSInode::lookup(StringView name)
 {
-    LOCKER(m_lock);
+    LOCKER(m_lock, Lock::Mode::Shared);
     ASSERT(is_directory());
 
     if (name == ".")
-        return identifier();
+        return this;
     if (name == "..")
-        return m_parent;
+        return fs().get_inode(m_parent);
 
     auto it = m_children.find(name);
     if (it == m_children.end())
         return {};
-    return it->value.entry.inode;
+    return fs().get_inode(it->value.inode->identifier());
 }
 
-size_t TmpFSInode::directory_entry_count() const
+KResultOr<size_t> TmpFSInode::directory_entry_count() const
 {
-    LOCKER(m_lock);
+    LOCKER(m_lock, Lock::Mode::Shared);
     ASSERT(is_directory());
-
     return 2 + m_children.size();
+}
+
+void TmpFSInode::notify_watchers()
+{
+    set_metadata_dirty(true);
+    set_metadata_dirty(false);
 }
 
 void TmpFSInode::flush_metadata()
@@ -230,8 +251,7 @@ KResult TmpFSInode::chmod(mode_t mode)
     LOCKER(m_lock);
 
     m_metadata.mode = mode;
-    set_metadata_dirty(true);
-    set_metadata_dirty(false);
+    notify_watchers();
     return KSuccess;
 }
 
@@ -241,25 +261,44 @@ KResult TmpFSInode::chown(uid_t uid, gid_t gid)
 
     m_metadata.uid = uid;
     m_metadata.gid = gid;
-    set_metadata_dirty(true);
-    set_metadata_dirty(false);
+    notify_watchers();
     return KSuccess;
 }
 
-KResult TmpFSInode::add_child(InodeIdentifier child_id, const StringView& name, mode_t)
+KResultOr<NonnullRefPtr<Inode>> TmpFSInode::create_child(const String& name, mode_t mode, dev_t dev, uid_t uid, gid_t gid)
+{
+    LOCKER(m_lock);
+
+    // TODO: Support creating devices on TmpFS.
+    if (dev != 0)
+        return KResult(-ENOTSUP);
+
+    struct timeval now;
+    kgettimeofday(now);
+
+    InodeMetadata metadata;
+    metadata.mode = mode;
+    metadata.uid = uid;
+    metadata.gid = gid;
+    metadata.atime = now.tv_sec;
+    metadata.ctime = now.tv_sec;
+    metadata.mtime = now.tv_sec;
+
+    auto child = TmpFSInode::create(fs(), metadata, identifier());
+    auto result = add_child(child, name, mode);
+    if (result.is_error())
+        return result;
+    return child;
+}
+
+KResult TmpFSInode::add_child(Inode& child, const StringView& name, mode_t)
 {
     LOCKER(m_lock);
     ASSERT(is_directory());
-    ASSERT(child_id.fsid() == fsid());
+    ASSERT(child.fsid() == fsid());
 
-    String owned_name = name;
-    FS::DirectoryEntry entry = { owned_name.characters(), owned_name.length(), child_id, 0 };
-    RefPtr<Inode> child_tmp = fs().get_inode(child_id);
-    NonnullRefPtr<TmpFSInode> child = static_cast<NonnullRefPtr<TmpFSInode>>(child_tmp.release_nonnull());
-
-    m_children.set(owned_name, { entry, move(child) });
-    set_metadata_dirty(true);
-    set_metadata_dirty(false);
+    m_children.set(name, { name, static_cast<TmpFSInode&>(child) });
+    did_add_child(child.identifier());
     return KSuccess;
 }
 
@@ -268,16 +307,19 @@ KResult TmpFSInode::remove_child(const StringView& name)
     LOCKER(m_lock);
     ASSERT(is_directory());
 
+    if (name == "." || name == "..")
+        return KSuccess;
+
     auto it = m_children.find(name);
     if (it == m_children.end())
         return KResult(-ENOENT);
+    auto child_id = it->value.inode->identifier();
     m_children.remove(it);
-    set_metadata_dirty(true);
-    set_metadata_dirty(false);
+    did_remove_child(child_id);
     return KSuccess;
 }
 
-KResult TmpFSInode::truncate(off_t size)
+KResult TmpFSInode::truncate(u64 size)
 {
     LOCKER(m_lock);
     ASSERT(!is_directory());
@@ -300,13 +342,14 @@ KResult TmpFSInode::truncate(off_t size)
 
     size_t old_size = m_metadata.size;
     m_metadata.size = size;
-    set_metadata_dirty(true);
-    set_metadata_dirty(false);
+    notify_watchers();
 
     if (old_size != (size_t)size) {
         inode_size_changed(old_size, size);
-        if (m_content.has_value())
-            inode_contents_changed(0, size, m_content.value().data());
+        if (m_content.has_value()) {
+            auto buffer = UserOrKernelBuffer::for_kernel_buffer(m_content.value().data());
+            inode_contents_changed(0, size, buffer);
+        }
     }
 
     return KSuccess;
@@ -327,8 +370,7 @@ int TmpFSInode::set_ctime(time_t time)
     LOCKER(m_lock);
 
     m_metadata.ctime = time;
-    set_metadata_dirty(true);
-    set_metadata_dirty(false);
+    notify_watchers();
     return KSuccess;
 }
 
@@ -337,8 +379,7 @@ int TmpFSInode::set_mtime(time_t time)
     LOCKER(m_lock);
 
     m_metadata.mtime = time;
-    set_metadata_dirty(true);
-    set_metadata_dirty(false);
+    notify_watchers();
     return KSuccess;
 }
 
@@ -346,4 +387,6 @@ void TmpFSInode::one_ref_left()
 {
     // Destroy ourselves.
     fs().unregister_inode(identifier());
+}
+
 }

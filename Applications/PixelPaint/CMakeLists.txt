@@ -1,0 +1,30 @@
+set(SOURCES
+    BucketTool.cpp
+    CreateNewLayerDialog.cpp
+    EllipseTool.cpp
+    EraseTool.cpp
+    Filters/BoxBlurFilter.cpp
+    Filters/Filter.cpp
+    Filters/GenericConvolutionFilter.cpp
+    Filters/LaplacianFilter.cpp
+    Filters/SharpenFilter.cpp
+    Filters/SpatialGaussianBlurFilter.cpp
+    Image.cpp
+    ImageEditor.cpp
+    Layer.cpp
+    LayerListWidget.cpp
+    LayerPropertiesWidget.cpp
+    LineTool.cpp
+    main.cpp
+    MoveTool.cpp
+    PaletteWidget.cpp
+    PenTool.cpp
+    PickerTool.cpp
+    RectangleTool.cpp
+    SprayTool.cpp
+    ToolboxWidget.cpp
+    Tool.cpp
+)
+
+serenity_bin(PixelPaint)
+target_link_libraries(PixelPaint LibGUI LibGfx)

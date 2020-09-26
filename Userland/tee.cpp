@@ -1,16 +1,42 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <AK/Vector.h>
+#include <LibCore/ArgsParser.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <getopt.h>
 #include <signal.h>
 #include <stdio.h>
 #include <unistd.h>
 
-static Vector<int> collect_fds(int argc, char** argv, int start, bool aflag, bool* err)
+static Vector<int> collect_fds(Vector<const char*> paths, bool append, bool* err)
 {
     int oflag;
     mode_t mode;
-    if (aflag) {
+    if (append) {
         oflag = O_APPEND;
         mode = 0;
     } else {
@@ -19,8 +45,8 @@ static Vector<int> collect_fds(int argc, char** argv, int start, bool aflag, boo
     }
 
     Vector<int> fds;
-    for (int i = start; i < argc; ++i) {
-        int fd = open(argv[i], oflag, mode);
+    for (const char* path : paths) {
+        int fd = open(path, oflag, mode);
         if (fd < 0) {
             perror("failed to open file for writing");
             *err = true;
@@ -47,7 +73,7 @@ static void copy_stdin(Vector<int>& fds, bool* err)
         }
 
         Vector<int> broken_fds;
-        for (int i = 0; i < fds.size(); ++i) {
+        for (size_t i = 0; i < fds.size(); ++i) {
             auto fd = fds.at(i);
             int twrite = 0;
             while (twrite != nread) {
@@ -93,28 +119,24 @@ static void int_handler(int)
 
 int main(int argc, char** argv)
 {
-    bool aflag = false, iflag = false;
-    int c = 0;
-    while ((c = getopt(argc, argv, "ai")) != -1) {
-        switch (c) {
-        case 'a':
-            aflag = true;
-            break;
-        case 'i':
-            iflag = true;
-            break;
-        }
-    }
+    bool append = false;
+    bool ignore_interrupts = false;
+    Vector<const char*> paths;
 
-    if (iflag) {
-        if (signal(SIGINT, int_handler) == SIG_ERR) {
+    Core::ArgsParser args_parser;
+    args_parser.add_option(append, "Append, don't overwrite", "append", 'a');
+    args_parser.add_option(ignore_interrupts, "Ignore SIGINT", "ignore-interrupts", 'i');
+    args_parser.add_positional_argument(paths, "Files to copy stdin to", "file", Core::ArgsParser::Required::No);
+    args_parser.parse(argc, argv);
+
+    if (ignore_interrupts) {
+        if (signal(SIGINT, int_handler) == SIG_ERR)
             perror("failed to install SIGINT handler");
-        }
     }
 
     bool err_open = false;
     bool err_write = false;
-    auto fds = collect_fds(argc, argv, optind, aflag, &err_open);
+    auto fds = collect_fds(paths, append, &err_open);
     copy_stdin(fds, &err_write);
     close_fds(fds);
 

@@ -1,6 +1,69 @@
+/*
+ * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #pragma once
 
+#include <AK/DistinctNumeric.h>
 #include <AK/Types.h>
+
+#define O_RDONLY (1 << 0)
+#define O_WRONLY (1 << 1)
+#define O_RDWR (O_RDONLY | O_WRONLY)
+#define O_ACCMODE (O_RDONLY | O_WRONLY)
+#define O_EXEC (1 << 2)
+#define O_CREAT (1 << 3)
+#define O_EXCL (1 << 4)
+#define O_NOCTTY (1 << 5)
+#define O_TRUNC (1 << 6)
+#define O_APPEND (1 << 7)
+#define O_NONBLOCK (1 << 8)
+#define O_DIRECTORY (1 << 9)
+#define O_NOFOLLOW (1 << 10)
+#define O_CLOEXEC (1 << 11)
+#define O_DIRECT (1 << 12)
+
+// Kernel internal options.
+#define O_NOFOLLOW_NOERROR (1 << 29)
+#define O_UNLINK_INTERNAL (1 << 30)
+
+#define MS_NODEV (1 << 0)
+#define MS_NOEXEC (1 << 1)
+#define MS_NOSUID (1 << 2)
+#define MS_BIND (1 << 3)
+#define MS_RDONLY (1 << 4)
+#define MS_REMOUNT (1 << 5)
+
+enum {
+    _SC_NPROCESSORS_CONF,
+    _SC_NPROCESSORS_ONLN,
+    _SC_PAGESIZE,
+};
+
+#define PERF_EVENT_MALLOC 1
+#define PERF_EVENT_FREE 2
 
 #define WNOHANG 1
 #define WUNTRACED 2
@@ -36,14 +99,43 @@
 
 #define MADV_SET_VOLATILE 0x100
 #define MADV_SET_NONVOLATILE 0x200
+#define MADV_GET_VOLATILE 0x400
+
+#define MAP_INHERIT_ZERO 1
 
 #define F_DUPFD 0
 #define F_GETFD 1
 #define F_SETFD 2
 #define F_GETFL 3
 #define F_SETFL 4
+#define F_ISTTY 5
 
 #define FD_CLOEXEC 1
+
+#define FUTEX_WAIT 1
+#define FUTEX_WAKE 2
+
+#define S_IFMT 0170000
+#define S_IFDIR 0040000
+#define S_IFCHR 0020000
+#define S_IFBLK 0060000
+#define S_IFREG 0100000
+#define S_IFIFO 0010000
+#define S_IFLNK 0120000
+#define S_IFSOCK 0140000
+
+#define S_ISUID 04000
+#define S_ISGID 02000
+#define S_ISVTX 01000
+#define S_IRUSR 0400
+#define S_IWUSR 0200
+#define S_IXUSR 0100
+#define S_IRGRP 0040
+#define S_IWGRP 0020
+#define S_IXGRP 0010
+#define S_IROTH 0004
+#define S_IWOTH 0002
+#define S_IXOTH 0001
 
 /* c_cc characters */
 #define VINTR 0
@@ -63,6 +155,7 @@
 #define VWERASE 14
 #define VLNEXT 15
 #define VEOL2 16
+#define VINFO 17
 
 /* c_iflag bits */
 #define IGNBRK 0000001
@@ -229,6 +322,11 @@ typedef u32 gid_t;
 typedef u32 clock_t;
 typedef u32 socklen_t;
 typedef int pid_t;
+// Avoid interference with AK/Types.h and LibC/sys/types.h by defining *separate* names:
+TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ProcessID);
+TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ThreadID);
+TYPEDEF_DISTINCT_ORDERED_ID(pid_t, SessionID);
+TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ProcessGroupID);
 
 struct tms {
     clock_t tms_utime;
@@ -241,7 +339,21 @@ typedef void (*__sighandler_t)(int);
 typedef __sighandler_t sighandler_t;
 
 typedef u32 sigset_t;
-typedef void siginfo_t;
+
+union sigval {
+    int sival_int;
+    void* sival_ptr;
+};
+
+typedef struct siginfo {
+    int si_signo;
+    int si_code;
+    pid_t si_pid;
+    uid_t si_uid;
+    void* si_addr;
+    int si_status;
+    union sigval si_value;
+} siginfo_t;
 
 struct sigaction {
     union {
@@ -261,10 +373,17 @@ struct sigaction {
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
 
+#define CLD_EXITED 0
+#define CLD_KILLED 1
+#define CLD_DUMPED 2
+#define CLD_TRAPPED 3
+#define CLD_STOPPED 4
+#define CLD_CONTINUED 5
+
 #define OFF_T_MAX 2147483647
 
-typedef i32 off_t;
-typedef u32 time_t;
+typedef ssize_t off_t;
+typedef i64 time_t;
 
 struct utimbuf {
     time_t actime;
@@ -323,6 +442,7 @@ struct pollfd {
 #define AF_UNSPEC 0
 #define AF_LOCAL 1
 #define AF_INET 2
+#define AF_MAX 3
 #define PF_LOCAL AF_LOCAL
 #define PF_INET AF_INET
 
@@ -333,15 +453,31 @@ struct pollfd {
 #define SOCK_NONBLOCK 04000
 #define SOCK_CLOEXEC 02000000
 
+#define SHUT_RD 1
+#define SHUT_WR 2
+#define SHUT_RDWR 3
+
+#define MSG_TRUNC 0x1
+#define MSG_CTRUNC 0x2
 #define MSG_DONTWAIT 0x40
 
 #define SOL_SOCKET 1
 
-#define SO_RCVTIMEO 1
-#define SO_SNDTIMEO 2
-#define SO_KEEPALIVE 3
-#define SO_ERROR 4
-#define SO_PEERCRED 5
+enum {
+    SO_RCVTIMEO,
+    SO_SNDTIMEO,
+    SO_TYPE,
+    SO_ERROR,
+    SO_PEERCRED,
+    SO_REUSEADDR,
+    SO_BINDTODEVICE,
+    SO_KEEPALIVE,
+    SO_TIMESTAMP,
+};
+
+enum {
+    SCM_TIMESTAMP,
+};
 
 #define IPPROTO_IP 0
 #define IPPROTO_ICMP 1
@@ -399,8 +535,15 @@ struct timespec {
     long tv_nsec;
 };
 
+typedef enum {
+    P_ALL = 1,
+    P_PID,
+    P_PGID
+} idtype_t;
+
 typedef int clockid_t;
 
+#define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1
 #define TIMER_ABSTIME 99
 
@@ -414,15 +557,25 @@ struct utsname {
     char machine[UTSNAME_ENTRY_LEN];
 };
 
-struct [[gnu::packed]] FarPtr
-{
-    u32 offset { 0 };
-    u16 selector { 0 };
-};
-
 struct iovec {
     void* iov_base;
     size_t iov_len;
+};
+
+struct cmsghdr {
+    socklen_t cmsg_len;
+    int cmsg_level;
+    int cmsg_type;
+};
+
+struct msghdr {
+    void* msg_name;
+    socklen_t msg_namelen;
+    struct iovec* msg_iov;
+    int msg_iovlen;
+    void* msg_control;
+    socklen_t msg_controllen;
+    int msg_flags;
 };
 
 struct sched_param {
@@ -436,6 +589,7 @@ struct ifreq {
         struct sockaddr ifru_addr;
         struct sockaddr ifru_dstaddr;
         struct sockaddr ifru_broadaddr;
+        struct sockaddr ifru_netmask;
         struct sockaddr ifru_hwaddr;
         short ifru_flags;
         int ifru_metric;
@@ -447,6 +601,7 @@ struct ifreq {
 #define ifr_addr ifr_ifru.ifru_addr           // address
 #define ifr_dstaddr ifr_ifru.ifru_dstaddr     // other end of p-to-p link
 #define ifr_broadaddr ifr_ifru.ifru_broadaddr // broadcast address
+#define ifr_netmask ifr_ifru.ifru_netmask     // network mask
 #define ifr_flags ifr_ifru.ifru_flags         // flags
 #define ifr_metric ifr_ifru.ifru_metric       // metric
 #define ifr_mtu ifr_ifru.ifru_metric          // mtu (overload)
@@ -461,5 +616,50 @@ struct ifreq {
 #define ifr_hwaddr ifr_ifru.ifru_hwaddr       // MAC address
 };
 
+struct rtentry {
+    struct sockaddr rt_gateway; /* the gateway address */
+    struct sockaddr rt_genmask; /* the target network mask */
+    unsigned short int rt_flags;
+    char* rt_dev;
+    /* FIXME: complete the struct */
+};
+
+#define RTF_UP 0x1      /* do not delete the route */
+#define RTF_GATEWAY 0x2 /* the route is a gateway and not an end host */
+
 #define AT_FDCWD -100
 
+#define PURGE_ALL_VOLATILE 0x1
+#define PURGE_ALL_CLEAN_INODE 0x2
+
+#define PT_TRACE_ME 1
+#define PT_ATTACH 2
+#define PT_CONTINUE 3
+#define PT_SYSCALL 4
+#define PT_GETREGS 5
+#define PT_DETACH 6
+#define PT_PEEK 7
+#define PT_POKE 8
+#define PT_SETREGS 9
+
+// Used in struct dirent
+enum {
+    DT_UNKNOWN = 0,
+#define DT_UNKNOWN DT_UNKNOWN
+    DT_FIFO = 1,
+#define DT_FIFO DT_FIFO
+    DT_CHR = 2,
+#define DT_CHR DT_CHR
+    DT_DIR = 4,
+#define DT_DIR DT_DIR
+    DT_BLK = 6,
+#define DT_BLK DT_BLK
+    DT_REG = 8,
+#define DT_REG DT_REG
+    DT_LNK = 10,
+#define DT_LNK DT_LNK
+    DT_SOCK = 12,
+#define DT_SOCK DT_SOCK
+    DT_WHT = 14
+#define DT_WHT DT_WHT
+};

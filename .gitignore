@@ -8,9 +8,10 @@
 *.o
 *.ao
 *.a
-
+*.so
 *.d
 
+*.swo
 *.swp
 *.config
 *.creator
@@ -21,13 +22,20 @@
 *.cflags
 *.cxxflags
 *.autosave
-Root
+Meta/Lagom/build
+Build
+build
+CMakeFiles
 Toolchain/Tarballs
 Toolchain/Build
 Toolchain/Local
 .vscode
+.ccls-cache
 .DS_Store
 compile_commands.json
 .clang_complete
+.clangd
 *Endpoint.h
 Ports/packages.db
+.idea/
+cmake-build-debug/
